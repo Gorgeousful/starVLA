@@ -9,6 +9,7 @@ from typing import Sequence
 from omegaconf import OmegaConf
 
 from starVLA.dataloader.gr00t_lerobot.datasets import LeRobotSingleDataset, LeRobotMixtureDataset
+from starVLA.dataloader.gr00t_lerobot.custom_datasets import CustomLeRobotSingleDataset
 from starVLA.dataloader.gr00t_lerobot.registry import (
     ROBOT_TYPE_CONFIG_MAP,
     ROBOT_TYPE_TO_EMBODIMENT_TAG,
@@ -47,7 +48,13 @@ def make_LeRobotSingleDataset(
         embodiment_tag = ROBOT_TYPE_TO_EMBODIMENT_TAG[robot_type]
     
     video_backend = data_cfg.get("video_backend", "decord") if data_cfg else "torchvision_av"
-    return LeRobotSingleDataset(
+    custom_annotation_cfg = data_cfg.get("custom_annotation", {}) if data_cfg else {}
+    dataset_cls = (
+        CustomLeRobotSingleDataset
+        if custom_annotation_cfg.get("enabled", False) not in ["False", False]
+        else LeRobotSingleDataset
+    )
+    return dataset_cls(
         dataset_path=dataset_path,
         modality_configs=modality_config,
         transforms=transforms,
