@@ -2,6 +2,9 @@ import json
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+from PIL import Image
+
 from starVLA.dataloader.gr00t_lerobot.datasets import LeRobotSingleDataset
 
 
@@ -17,10 +20,12 @@ class CustomAnnotationIndex:
         dataset_path: Path,
         dataset_fps: float | int | None = None,
         include_gripper: bool = True,
+        delta_indices: list[int] | None = None,
     ):
         self.dataset_path = Path(dataset_path)
         self.dataset_fps = float(dataset_fps) if dataset_fps is not None else None
         self.include_gripper = include_gripper
+        self.delta_indices = [int(index) for index in (delta_indices or [0])]
 
         self.task_segments = self._load_task_segments()
         self.grounding_by_episode = self._load_jsonl_by_episode(CUSTOM_GROUNDING_FILENAME)
@@ -95,6 +100,7 @@ class CustomAnnotationIndex:
                 "description": str(phase_meta.get("description", "")),
             },
             "grounding": {
+                "delta_indices": list(self.delta_indices),
                 "objects": self._build_grounding_objects(
                     grounding_record=grounding_record,
                     subtask_meta=subtask_meta,
@@ -259,20 +265,22 @@ class CustomAnnotationIndex:
         bboxes = obj.get("bbox")
         if not isinstance(bboxes, list):
             raise ValueError(f"Missing bbox list for object_key={object_key}")
-        if base_index < 0 or base_index >= len(bboxes):
-            raise ValueError(
-                f"BBox index out of range for object_key={object_key}: "
-                f"base_index={base_index}, bbox_len={len(bboxes)}"
-            )
-        bbox = bboxes[base_index]
-        if not isinstance(bbox, list) or len(bbox) != 4:
-            raise ValueError(
-                f"Invalid bbox for object_key={object_key}, base_index={base_index}: {bbox}"
-            )
+        packed_bboxes = []
+        for delta_index in self.delta_indices:
+            raw_index = base_index + delta_index
+            safe_index = min(max(raw_index, 0), len(bboxes) - 1)
+            bbox = bboxes[safe_index]
+            if not isinstance(bbox, list) or len(bbox) != 4:
+                raise ValueError(
+                    f"Invalid bbox for object_key={object_key}, "
+                    f"base_index={base_index}, delta_index={delta_index}, "
+                    f"safe_index={safe_index}: {bbox}"
+                )
+            packed_bboxes.append(bbox)
         return {
             "object_key": object_key,
             "name": str(obj.get("name", "")),
-            "bbox": bbox,
+            "bbox": packed_bboxes,
             "is_manipulated": is_manipulated,
         }
 
@@ -305,10 +313,12 @@ class CustomLeRobotSingleDataset(LeRobotSingleDataset):
         data_cfg = kwargs.get("data_cfg", None)
         custom_annotation_cfg = data_cfg.get("custom_annotation", {}) if data_cfg else {}
         include_gripper = custom_annotation_cfg.get("include_gripper", True)
+        delta_indices = custom_annotation_cfg.get("delta_indices", [0])
         self.annotation_index = CustomAnnotationIndex(
             dataset_path=self.dataset_path,
             dataset_fps=self.lerobot_info_meta.get("fps"),
             include_gripper=include_gripper not in ["False", False],
+            delta_indices=delta_indices,
         )
         self._annotation_context: tuple[int, int] | None = None
 
@@ -320,6 +330,43 @@ class CustomLeRobotSingleDataset(LeRobotSingleDataset):
         if self._annotation_context is None:
             raise ValueError("Custom annotation context is missing before packing sample")
         episode_index, base_index = self._annotation_context
-        sample = super()._pack_sample(data)
+
+        video_keys = list(self.modality_keys["video"])
+        video_delta_indices = [
+            int(index) for index in self.delta_indices[video_keys[0]].tolist()
+        ]
+        step_images = []
+        num_frames = len(data[video_keys[0]])
+        for frame_index in range(num_frames):
+            for video_key in video_keys:
+                image = data[video_key][frame_index]
+                image = Image.fromarray(image).resize((224, 224))
+                step_images.append(image)
+
+        language = data[self.modality_keys["language"][0]][0]
+        action = []
+        for action_key in self.modality_keys["action"]:
+            action.append(data[action_key])
+        action = np.concatenate(action, axis=1).astype(np.float16)
+
+        sample = {
+            "action": action,
+            "image": step_images,
+            "image_layout": {
+                "order": "time-major",
+                "delta_indices": video_delta_indices,
+                "video_keys": video_keys,
+            },
+            "lang": language,
+            "robot_tag": self.tag,
+        }
+
+        if self.data_cfg is not None and self.data_cfg.get("include_state", False) not in ["False", False]:
+            state = []
+            for state_key in self.modality_keys["state"]:
+                state.append(data[state_key])
+            state = np.concatenate(state, axis=1).astype(np.float16)
+            sample["state"] = state
+
         sample.update(self.annotation_index.get_sample_fields(episode_index, base_index))
         return sample

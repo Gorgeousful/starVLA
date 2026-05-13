@@ -112,7 +112,7 @@ class _QWen3_VL_Interface(nn.Module):
             )
         return generation_output
 
-    def build_qwenvl_inputs(self, images, instructions, solutions=None, **kwargs):
+    def build_qwenvl_inputs(self, images, instructions, solutions=None, solution_label_mask="action_tokens", **kwargs):
         """
         Build model inputs from raw data (images + instructions + optional solutions).
         Follow Oficial Qwen3-VL Instruct format: https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct
@@ -149,27 +149,74 @@ class _QWen3_VL_Interface(nn.Module):
             action_token_min = _ACTION_TOKEN_MIN  # how can we know this range? --> we has other way for this, but is slower see qwenhelix branch
             action_token_max = _ACTION_TOKEN_MAX  # here only for fast_tokenizer, see starVLA/model/modules/vlm/tools/add_qwen_special_tokens/README.md
             labels = batch_inputs["input_ids"].clone()
-            # For each sequence in the batch, find the first occurrence of an action token.
-            for i in range(labels.size(0)):
-                seq = labels[i]
-                # Create a mask for tokens within the action token range.
-                mask_seq = (seq >= action_token_min) & (seq <= action_token_max)
-                nonzero_indices = torch.nonzero(mask_seq, as_tuple=False)
-                if nonzero_indices.numel() > 0:
-                    first_action_index = nonzero_indices[0].item()
-                    # Mask out all tokens before the first action token.
-                    seq[:first_action_index] = IGNORE_INDEX
-                else:
-                    # If no action token is found, mask the entire sequence.
-                    seq[:] = IGNORE_INDEX
-                    RuntimeWarning(
-                        "action token are on in yout tokenizer, plz see starVLA/model/modules/vlm/tools/add_qwen_special_tokens/README.md."
+            if solution_label_mask == "output_tokens":
+                masked_labels = torch.full_like(labels, IGNORE_INDEX)
+                for i, solution in enumerate(solutions):
+                    solution_ids = self.processor.tokenizer(
+                        solution,
+                        add_special_tokens=False,
+                    )["input_ids"]
+                    start = self._find_token_subsequence(labels[i], solution_ids)
+                    if start is None:
+                        logger.warning(
+                            "Could not find assistant solution token span; falling back to action-token labels."
+                        )
+                        self._mask_action_token_labels(
+                            masked_labels[i],
+                            labels[i],
+                            action_token_min,
+                            action_token_max,
+                        )
+                        continue
+                    end = start + len(solution_ids)
+                    masked_labels[i, start:end] = labels[i, start:end]
+                labels = masked_labels
+            elif solution_label_mask == "action_tokens":
+                for i in range(labels.size(0)):
+                    self._mask_action_token_labels(
+                        labels[i],
+                        labels[i],
+                        action_token_min,
+                        action_token_max,
                     )
+            else:
+                raise ValueError(f"Unsupported solution_label_mask={solution_label_mask!r}")
 
             labels[labels == self.processor.tokenizer.pad_token_id] = -100  ## mask out pad tokens as well
             batch_inputs["labels"] = labels
 
         return batch_inputs.to(self.model.device)
+
+    def _find_token_subsequence(self, sequence: torch.Tensor, pattern: list[int]) -> int | None:
+        if not pattern:
+            return None
+        pattern_tensor = torch.tensor(pattern, device=sequence.device, dtype=sequence.dtype)
+        max_start = sequence.numel() - pattern_tensor.numel()
+        if max_start < 0:
+            return None
+        for start in range(max_start + 1):
+            if torch.equal(sequence[start : start + pattern_tensor.numel()], pattern_tensor):
+                return start
+        return None
+
+    def _mask_action_token_labels(
+        self,
+        target: torch.Tensor,
+        source: torch.Tensor,
+        action_token_min: int,
+        action_token_max: int,
+    ) -> None:
+        mask_seq = (source >= action_token_min) & (source <= action_token_max)
+        nonzero_indices = torch.nonzero(mask_seq, as_tuple=False)
+        if nonzero_indices.numel() > 0:
+            first_action_index = nonzero_indices[0].item()
+            target[:] = source
+            target[:first_action_index] = IGNORE_INDEX
+        else:
+            target[:] = IGNORE_INDEX
+            RuntimeWarning(
+                "action token are on in yout tokenizer, plz see starVLA/model/modules/vlm/tools/add_qwen_special_tokens/README.md."
+            )
 
 
 if __name__ == "__main__":

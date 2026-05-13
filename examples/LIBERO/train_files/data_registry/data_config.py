@@ -36,6 +36,7 @@ class Libero4in1DataConfig:
     ]
     language_keys = ["annotation.human.action.task_description"]
     observation_indices = [0]
+    language_indices = [0]
     action_indices = list(range(8))
     state_indices = [0]
 
@@ -44,7 +45,7 @@ class Libero4in1DataConfig:
             "video": ModalityConfig(delta_indices=self.observation_indices, modality_keys=self.video_keys),
             "state": ModalityConfig(delta_indices=self.state_indices, modality_keys=self.state_keys), # igore state modality for now since some datasets don't have state and we want to be able to use them, can add back later if needed
             "action": ModalityConfig(delta_indices=self.action_indices, modality_keys=self.action_keys),
-            "language": ModalityConfig(delta_indices=self.observation_indices, modality_keys=self.language_keys),
+            "language": ModalityConfig(delta_indices=self.language_indices, modality_keys=self.language_keys),
         }
 
     def transform(self):

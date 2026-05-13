@@ -546,6 +546,7 @@ def calculate_rel_action_statistics(
         }
     return rel_stats
 
+
 class ModalityConfig(BaseModel):
     """Configuration for a modality."""
 
