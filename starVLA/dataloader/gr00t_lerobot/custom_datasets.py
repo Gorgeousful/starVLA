@@ -270,6 +270,9 @@ class CustomAnnotationIndex:
             raw_index = base_index + delta_index
             safe_index = min(max(raw_index, 0), len(bboxes) - 1)
             bbox = bboxes[safe_index]
+            if bbox is None:
+                packed_bboxes.append(None)
+                continue
             if not isinstance(bbox, list) or len(bbox) != 4:
                 raise ValueError(
                     f"Invalid bbox for object_key={object_key}, "

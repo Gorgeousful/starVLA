@@ -25,7 +25,7 @@ import torch.distributed as dist
 import wandb
 from accelerate import Accelerator, DeepSpeedPlugin
 from accelerate.logging import get_logger
-from accelerate.utils import set_seed
+from accelerate.utils import GradientAccumulationPlugin, set_seed
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -39,7 +39,14 @@ from starVLA.training.trainer_utils.config_tracker import AccessTrackedConfig, w
 from starVLA.training.trainer_utils.trainer_tools import TrainerUtils, build_param_lr_groups, setup_optimizer_and_scheduler, normalize_dotlist_args
 
 deepspeed_plugin = DeepSpeedPlugin()
-accelerator = Accelerator(deepspeed_plugin=deepspeed_plugin)
+gradient_accumulation_plugin = GradientAccumulationPlugin(
+    num_steps=int(os.environ.get("ACCELERATE_GRADIENT_ACCUMULATION_STEPS", 1)),
+    sync_each_batch=True,
+)
+accelerator = Accelerator(
+    deepspeed_plugin=deepspeed_plugin,
+    gradient_accumulation_plugin=gradient_accumulation_plugin,
+)
 accelerator.print(accelerator.state)
 
 # Sane Defaults
@@ -310,10 +317,6 @@ class VLATrainer(TrainerUtils):
             step_metrics = self._train_step(batch_vla)
             t_end_model = time.perf_counter()
 
-            if self.accelerator.sync_gradients:
-                progress_bar.update(1)
-                self.completed_steps += 1
-
             if self.accelerator.is_local_main_process:
                 progress_bar.set_postfix(
                     {
@@ -322,18 +325,22 @@ class VLATrainer(TrainerUtils):
                     }
                 )
 
-            if self.completed_steps % self.config.trainer.eval_interval == 0:
-                step_metrics = self.eval_action_model(step_metrics)
+            if self.accelerator.sync_gradients:
+                progress_bar.update(1)
+                self.completed_steps += 1
 
-            step_metrics["timing/data"] = t_end_data - t_start_data
-            step_metrics["timing/model"] = t_end_model - t_start_model
-            self._log_metrics(step_metrics)
+                if self.completed_steps % self.config.trainer.eval_interval == 0:
+                    step_metrics = self.eval_action_model(step_metrics)
 
-            if self.completed_steps % self.config.trainer.save_interval == 0 and self.completed_steps > 0:
-                self._save_checkpoint()
+                step_metrics["timing/data"] = t_end_data - t_start_data
+                step_metrics["timing/model"] = t_end_model - t_start_model
+                self._log_metrics(step_metrics)
 
-            if self.completed_steps >= self.config.trainer.max_train_steps:
-                break
+                if self.completed_steps % self.config.trainer.save_interval == 0 and self.completed_steps > 0:
+                    self._save_checkpoint()
+
+                if self.completed_steps >= self.config.trainer.max_train_steps:
+                    break
 
         self._finalize_training()
 
@@ -368,8 +375,6 @@ class VLATrainer(TrainerUtils):
     def _train_step(self, batch_vla, batch_vlm=None):
         """Execute single training step."""
         with self.accelerator.accumulate(self.model):
-            self.optimizer.zero_grad()
-
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 output_dict = self.model.forward(batch_vla)
                 action_loss = output_dict["action_loss"]
@@ -377,7 +382,7 @@ class VLATrainer(TrainerUtils):
 
             self.accelerator.backward(total_loss)
 
-            if self.config.trainer.gradient_clipping is not None:
+            if self.accelerator.sync_gradients and self.config.trainer.gradient_clipping is not None:
                 self.accelerator.clip_grad_norm_(self.model.parameters(), self.config.trainer.gradient_clipping)
 
             self.optimizer.step()
@@ -388,6 +393,7 @@ class VLATrainer(TrainerUtils):
             # at min_lr well before max_train_steps is reached.
             if self.accelerator.sync_gradients:
                 self.lr_scheduler.step()
+            self.optimizer.zero_grad()
 
         return {
             "action_dit_loss": action_loss.item(),

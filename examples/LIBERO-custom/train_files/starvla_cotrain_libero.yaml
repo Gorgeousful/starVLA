@@ -16,6 +16,15 @@ framework:
     flow_loss_weight: 1.0
     fast_loss_weight: 1.0
     detach_vlm_for_flow: true
+    keep_gripper_state: true
+    gripper_open_max: 0.04
+  delta_mem:
+    enabled: true
+    adapter_layers: null
+    rank: 8
+    alpha: 16.0
+    delta_heads: ["q", "o"]
+    history_write_mode: frame_mean
   action_model:
     action_dim: 7
     state_dim: 7
@@ -42,7 +51,7 @@ datasets:
     data_mix: libero_all_custom
     action_type: delta_qpos
     sequential_step_sampling: False
-    CoT_prompt: "Your task is {instruction}."
+    CoT_prompt: "Given: {instruction}\nPredict: [SUBTASK] [PHASE] [GROUNDING] [ACTION]" # Predict: [ACTION]
     per_device_batch_size: 16
     load_all_data_for_training: true
     video_backend: torchvision_av
@@ -50,7 +59,7 @@ datasets:
     custom_annotation:
       enabled: true
       include_gripper: true
-      delta_indices: [-16, -8, 0]
+      delta_indices: [0] # [8] [0,8]
       bbox_size: [256, 256]
 
 trainer:
@@ -65,7 +74,7 @@ trainer:
   lr_scheduler_type: cosine_with_min_lr
   scheduler_specific_kwargs:
     min_lr: 1.0e-06
-  freeze_modules: ''
+  freeze_modules: '' # 'qwen_vl_interface'
   loss_scale:
     vla: 1.0
     vlm: 0.1
@@ -73,7 +82,7 @@ trainer:
   weight_decay: 0.0
   logging_frequency: 10
   gradient_clipping: 1.0
-  gradient_accumulation_steps: 4
+  gradient_accumulation_steps: 4 # 无效
   gradient_checkpointing: true
 
   optimizer:

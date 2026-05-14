@@ -1,26 +1,29 @@
 
 
-export NCCL_SOCKET_IFNAME=bond0
-export NCCL_IB_HCA=mlx5_2,mlx5_3
+# Single-node training: do not pin NCCL to cluster-specific NIC / IB devices.
+# Let NCCL pick a local socket interface and keep IB disabled for local machines.
+unset NCCL_SOCKET_IFNAME
+unset NCCL_IB_HCA
+export NCCL_IB_DISABLE=1
 
 # used for check save when communication
-export NCCL_BLOCKING_WAIT=1
-export NCCL_ASYNC_ERROR_HANDLING=1
+export TORCH_NCCL_BLOCKING_WAIT=1
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export NCCL_TIMEOUT=10000  # timeout set to 1 hour (unit: seconds)
 export NCCL_SOCKET_TIMEOUT_MS=360000
 ###########################################################################################
 # === Please modify the following paths according to your environment ===
-Framework_name=QwenPI
-freeze_module_list=''
-base_vlm=playground/Pretrained_models/Qwen3-VL-4B-Instruct
 config_yaml=./examples/LIBERO-custom/train_files/starvla_cotrain_libero.yaml
 libero_data_root=playground/Datasets/LEROBOT_LIBERO_DATA
-data_mix=libero_all_custom
+data_mix=libero_10_custom # libero_all_custom
 run_root_dir=./playground/Checkpoints
-run_id=0513_libero4in1_custom_qwen3pi
+run_id=0513_libero4in1_custom_qwen3ki
 wandb_entity=luokang2192-irmv
 wandb_project=starvla_libero
-per_device_batch_size=16
+per_device_batch_size=2
+gradient_accumulation_steps=4
+is_debug=True
 # === End of environment variable configuration ===
 ###########################################################################################
 
@@ -30,21 +33,19 @@ cp $0 ${output_dir}/ # mv this script to the output dir
 
 
 export WANDB_MODE=disabled
-export CUDA_VISIBLE_DEVICES=5,6
+export CUDA_VISIBLE_DEVICES=4
 num_processes=${NUM_PROCESSES:-$(echo "$CUDA_VISIBLE_DEVICES" | awk -F',' '{print NF}')}
 accelerate launch \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
   --num_processes ${num_processes} \
+  --gradient_accumulation_steps ${gradient_accumulation_steps} \
   starVLA/training/train_starvla.py \
   --config_yaml ${config_yaml} \
-  --framework.name ${Framework_name} \
-  --framework.qwenvl.base_vlm ${base_vlm} \
   --datasets.vla_data.data_root_dir ${libero_data_root}\
   --datasets.vla_data.data_mix ${data_mix} \
   --datasets.vla_data.per_device_batch_size ${per_device_batch_size} \
-  --trainer.freeze_modules ${freeze_module_list} \
   --run_root_dir ${run_root_dir} \
   --run_id ${run_id} \
   --wandb_project ${wandb_project} \
   --wandb_entity ${wandb_entity} \
-  # --is_debug True
+  --is_debug ${is_debug}

@@ -41,6 +41,8 @@ Parameter breakdown (Qwen3-VL-4B + action_dit_hidden_dim=1024)
   TOTAL                     5,071,087,137  100.0%
 ═══════════════════════════════════════════════════════════════
 """
+import json
+import re
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
@@ -57,6 +59,12 @@ from starVLA.model.modules.action_model.LayerwiseFM_ActionHeader import (
     get_action_model as get_layerwise_action_model,
 )
 from starVLA.model.modules.action_model.fast_ActionHeader import get_action_model as get_fast_action_model
+from starVLA.model.modules.delta_mem import (
+    DeltaMemConfig,
+    attach_delta_mem_to_qwen3vl,
+    reset_delta_mem_states,
+    set_delta_mem_write_enabled,
+)
 from starVLA.model.modules.vlm import get_vlm_model
 from starVLA.model.tools import FRAMEWORK_REGISTRY
 from starVLA.training.trainer_utils import initialize_overwatch
@@ -100,6 +108,8 @@ class QwenKIDefaultConfig:
             "flow_loss_weight": 1.0,
             "fast_loss_weight": 1.0,
             "detach_vlm_for_flow": True,
+            "keep_gripper_state": False,
+            "gripper_open_max": 1.0,
         }
     )
 
@@ -110,6 +120,17 @@ class QwenKIDefaultConfig:
             "attn_implementation": "flash_attention_2",
             "vl_hidden_dim": 2048,  # auto-overridden at runtime from the loaded VLM
             "num_vl_layers": 36,  # auto-overridden at runtime from the loaded VLM
+        }
+    )
+
+    delta_mem: dict = field(
+        default_factory=lambda: {
+            "enabled": False,
+            "adapter_layers": None,
+            "rank": 8,
+            "alpha": 16.0,
+            "delta_heads": ["q", "o"],
+            "history_write_mode": "frame_mean",
         }
     )
 
@@ -183,6 +204,19 @@ class Qwen_KI(baseframework):
         # Merge framework defaults with YAML config (YAML wins on conflicts).
         self.config = merge_framework_config(QwenKIDefaultConfig, config)
         self.qwen_vl_interface = get_vlm_model(config=self.config)
+        self.delta_mem_enabled = self.config.framework.get("delta_mem", {}).get("enabled", False) not in [
+            "False",
+            False,
+        ]
+        if self.delta_mem_enabled:
+            self.delta_mem_config = DeltaMemConfig.from_config(self.config.framework.delta_mem)
+            replaced = attach_delta_mem_to_qwen3vl(self.qwen_vl_interface.model, self.delta_mem_config)
+            logger.info(
+                f"Attached QwenKI Delta-Mem to {len(replaced)} Qwen3-VL text attention layers. "
+                f"First layers: {replaced[:4]}"
+            )
+        else:
+            self.delta_mem_config = None
 
         # Read the actual hidden size and layer count from the loaded VLM.
         # `output_hidden_states=True` returns (num_hidden_layers + 1) tensors
@@ -254,8 +288,73 @@ class Qwen_KI(baseframework):
         self.ki_flow_loss_weight = float(ki_cfg.get("flow_loss_weight", 1.0))
         self.ki_fast_loss_weight = float(ki_cfg.get("fast_loss_weight", 1.0))
         self.ki_detach_vlm_for_flow = ki_cfg.get("detach_vlm_for_flow", True) not in ["False", False]
+        self.keep_gripper_state = ki_cfg.get("keep_gripper_state", False) not in ["False", False]
+        self.gripper_open_max = float(ki_cfg.get("gripper_open_max", 1.0))
+        if self.gripper_open_max <= 0:
+            raise ValueError("framework.ki.gripper_open_max must be positive.")
         custom_annotation_cfg = getattr(self.config.datasets.vla_data, "custom_annotation", {})
         self.ki_supervise_annotations = custom_annotation_cfg.get("enabled", False) not in ["False", False]
+
+    def _split_temporal_observations(
+        self,
+        examples: List[dict],
+    ) -> tuple[list[list], list[list[list]], list[np.ndarray] | None, list[list[np.ndarray]] | None]:
+        current_images: list[list] = []
+        history_images_by_step: list[list[list]] | None = None
+        current_states: list[np.ndarray] | None = [] if "state" in examples[0] else None
+        history_states_by_step: list[list[np.ndarray]] | None = None
+
+        for example in examples:
+            images = list(example["image"])
+            layout = example.get("image_layout", {})
+            delta_indices = list(layout.get("delta_indices", []))
+            video_keys = list(layout.get("video_keys", []))
+            num_views = len(video_keys)
+            if not delta_indices or num_views <= 0:
+                raise ValueError("Delta-Mem QwenKI requires image_layout with delta_indices and video_keys.")
+            expected = len(delta_indices) * num_views
+            if len(images) != expected:
+                raise ValueError(
+                    f"Expected {expected} images from image_layout, got {len(images)}. "
+                    f"delta_indices={delta_indices}, video_keys={video_keys}"
+                )
+
+            frame_images = [
+                images[index * num_views : (index + 1) * num_views]
+                for index in range(len(delta_indices))
+            ]
+            if history_images_by_step is None:
+                history_images_by_step = [[] for _ in frame_images[:-1]]
+            if len(history_images_by_step) != max(0, len(frame_images) - 1):
+                raise ValueError("All examples in a batch must have the same temporal image layout.")
+            for step_index, history_frame in enumerate(frame_images[:-1]):
+                history_images_by_step[step_index].append(history_frame)
+            current_images.append(frame_images[-1])
+
+            if current_states is not None:
+                state_array = np.asarray(example["state"])
+                if state_array.ndim == 1:
+                    frame_states = [state_array[None, :] for _ in delta_indices]
+                else:
+                    if state_array.shape[0] < len(delta_indices):
+                        raise ValueError(
+                            f"State history length {state_array.shape[0]} is shorter than image history "
+                            f"length {len(delta_indices)}."
+                        )
+                    frame_states = [state_array[index : index + 1] for index in range(len(delta_indices))]
+                if history_states_by_step is None:
+                    history_states_by_step = [[] for _ in frame_states[:-1]]
+                for step_index, history_state in enumerate(frame_states[:-1]):
+                    history_states_by_step[step_index].append(history_state)
+                current_states.append(frame_states[-1])
+
+        return current_images, history_images_by_step or [], current_states, history_states_by_step
+
+    def _examples_have_temporal_layout(self, examples: List[dict]) -> bool:
+        if not examples:
+            return False
+        layout = examples[0].get("image_layout", {})
+        return bool(layout.get("delta_indices")) and bool(layout.get("video_keys"))
 
     def _project_vl_hidden_for_action(self, vl_embs_list: List[torch.Tensor]) -> List[torch.Tensor]:
         """Project layer-wise VL hidden states to the hidden space expected by Action DiT."""
@@ -265,6 +364,34 @@ class Qwen_KI(baseframework):
                 f"but project_layers has {len(self.project_layers)} layers."
             )
         return [proj(vl_h) for proj, vl_h in zip(self.project_layers, vl_embs_list)]
+
+    def _write_delta_mem_history(
+        self,
+        history_images_by_step: list[list[list]],
+        instructions: List[str],
+        history_states_by_step: list[list[np.ndarray]] | None,
+    ) -> None:
+        reset_delta_mem_states(self.qwen_vl_interface.model)
+        set_delta_mem_write_enabled(self.qwen_vl_interface.model, True)
+        for step_index, history_images in enumerate(history_images_by_step):
+            step_instructions = instructions
+            if history_states_by_step is not None:
+                step_instructions = self.add_discretized_state_to_instruction(
+                    instructions,
+                    history_states_by_step[step_index],
+                )
+            qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(
+                images=history_images,
+                instructions=step_instructions,
+            )
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                self.qwen_vl_interface(
+                    **qwen_inputs,
+                    output_attentions=False,
+                    output_hidden_states=False,
+                    return_dict=True,
+                )
+        set_delta_mem_write_enabled(self.qwen_vl_interface.model, False)
 
     def _encode_vl_hidden_states(
         self, batch_images: List, instructions: List[str]
@@ -318,6 +445,22 @@ class Qwen_KI(baseframework):
             for example, tokens in zip(examples, batch_fast_tokens)
         ]
 
+        if self.delta_mem_enabled:
+            batch_images, history_images_by_step, current_state, history_states_by_step = (
+                self._split_temporal_observations(examples)
+            )
+            base_instructions = [example["lang"] for example in examples]
+            self._write_delta_mem_history(
+                history_images_by_step,
+                base_instructions,
+                history_states_by_step,
+            )
+            instructions = (
+                self.add_discretized_state_to_instruction(base_instructions, current_state)
+                if current_state is not None
+                else base_instructions
+            )
+
         # Step 1: train the VLM with FAST action tokens and reuse its hidden states.
         qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(
             images=batch_images,
@@ -357,7 +500,7 @@ class Qwen_KI(baseframework):
             repeated_diffusion_steps = (
                 self.config.trainer.get("repeated_diffusion_steps", 4) if self.config and self.config.trainer else 4
             )
-            repeated_diffusion_steps = 2  # No repeat for the large action FM to save memory.
+            repeated_diffusion_steps = 2  # Use a small repeat count for the large action FM to save memory.
             actions_target_repeated = actions_target.repeat(repeated_diffusion_steps, 1, 1)
             # Repeat every VLM layer embedding to match the duplicated action batch.
             vl_embs_list_repeated = [h.repeat(repeated_diffusion_steps, 1, 1) for h in vl_embs_for_flow]
@@ -426,6 +569,32 @@ class Qwen_KI(baseframework):
         if train_obs_image_size:
             batch_images = resize_images(batch_images, target_size=train_obs_image_size)
 
+        if self.delta_mem_enabled:
+            if self._examples_have_temporal_layout(examples):
+                batch_images, history_images_by_step, current_state, history_states_by_step = (
+                    self._split_temporal_observations(examples)
+                )
+                if train_obs_image_size:
+                    batch_images = resize_images(batch_images, target_size=train_obs_image_size)
+                    history_images_by_step = [
+                        resize_images(history_images, target_size=train_obs_image_size)
+                        for history_images in history_images_by_step
+                    ]
+                base_instructions = [example["lang"] for example in examples]
+                self._write_delta_mem_history(
+                    history_images_by_step,
+                    base_instructions,
+                    history_states_by_step,
+                )
+                instructions = (
+                    self.add_discretized_state_to_instruction(base_instructions, current_state)
+                    if current_state is not None
+                    else base_instructions
+                )
+            else:
+                reset_delta_mem_states(self.qwen_vl_interface.model)
+                set_delta_mem_write_enabled(self.qwen_vl_interface.model, False)
+
         # Step 1: encode through QwenVL
         vl_embs_list = self._encode_vl_hidden_states(batch_images, instructions)
         base_hidden = vl_embs_list[-1]
@@ -445,25 +614,40 @@ class Qwen_KI(baseframework):
         return {"normalized_actions": normalized_actions}
 
     def state2str_transform(self, state: np.ndarray) -> str:
-        """Quantise a state vector into 256 uniform bins and return it as a space-separated token string.
+        """Format proprioceptive state for prompt injection.
 
-        Follows the π₀.5 convention: bins span [-1, 1] uniformly.
-        Example: [-0.5, 0.1, 0.8] -> "95 133 203"
+        The default follows the π₀.5 convention: quantise the full state into
+        256 bins over [-1, 1]. When ``keep_gripper_state`` is enabled, keep
+        only the last gripper dimension, normalise absolute opening into
+        [0, 1], then quantise that scalar into a 256-bin token.
         """
+        state = np.asarray(state)
+        if self.keep_gripper_state:
+            gripper = float(state[-1])
+            normalized_gripper = np.clip(abs(gripper) / self.gripper_open_max, 0.0, 1.0)
+            discretized_gripper = np.digitize(
+                normalized_gripper,
+                bins=np.linspace(0, 1, 256 + 1)[:-1],
+            ) - 1
+            return str(int(discretized_gripper))
         discretized_state = np.digitize(state, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
         return " ".join(map(str, discretized_state))
 
-    def add_discretized_state_to_instruction(self, instructions: List[str], states: List[np.ndarray]) -> List[str]:
+    def add_discretized_state_to_instruction(
+        self,
+        instructions: List[str],
+        states: List[np.ndarray],
+    ) -> List[str]:
         """Append discretised proprioceptive state tokens to each instruction.
 
-        Format: ``<original instruction> [STATE] <bin indices> [ACTION]``
+        Format: ``<original instruction> [STATE] <bin indices>``.
         This lets the VLM attend to the robot state purely through its
         existing text-token pathway — no extra encoder required.
         """
         updated_instructions = []
         for instr, state in zip(instructions, states):
             state_str = self.state2str_transform(state[0])
-            updated_instructions.append(f"{instr} [STATE] {state_str} [ACTION]")
+            updated_instructions.append(f"{instr} [STATE] {state_str}")
         return updated_instructions
 
     def map_fast_token_to_vlm_action(self, tokens) -> str:
@@ -472,8 +656,7 @@ class Qwen_KI(baseframework):
 
     def build_training_solution(self, example: dict, fast_tokens) -> str:
         action_token_text = self.map_fast_token_to_vlm_action(fast_tokens)
-        action_delta_indices = self._get_action_delta_indices(example)
-        action_solution = f"[ACTION] delta_indices={action_delta_indices}; actions={action_token_text}"
+        action_solution = f"[ACTION] {action_token_text}"
         if not self.ki_supervise_annotations:
             return action_token_text
 
@@ -490,17 +673,17 @@ class Qwen_KI(baseframework):
 
         phase = example.get("phase")
         if isinstance(phase, dict) and (phase.get("category") or phase.get("description")):
-            parts.append(f"[PHASE] {phase.get('category', '')}: {phase.get('description', '')}")
+            phase_description = self._strip_object_indices(str(phase.get("description", "")))
+            parts.append(f"[PHASE] {phase.get('category', '')}: {phase_description}")
 
         grounding = example.get("grounding")
         if isinstance(grounding, dict):
-            delta_indices = grounding.get("delta_indices", [])
             objects = grounding.get("objects", []) or []
             object_texts = []
             for obj in self._sort_grounding_objects(objects):
                 object_texts.append(self._format_grounding_object(obj))
-            object_section = " | ".join(f"({text})" for text in object_texts) if object_texts else "none"
-            parts.append(f"[GROUNDING] delta_indices={delta_indices}; objects={object_section}")
+            object_section = " | ".join(object_texts) if object_texts else "none"
+            parts.append(f"[GROUNDING] {object_section}")
 
         return "\n".join(parts)
 
@@ -523,9 +706,12 @@ class Qwen_KI(baseframework):
 
     def _format_grounding_object(self, obj: dict) -> str:
         name = str(obj.get("name", ""))
-        object_key = str(obj.get("object_key", ""))
         bbox = self._normalize_bbox_sequence(obj.get("bbox", []))
-        return f"name={name}, key={object_key}, bbox={bbox}"
+        bbox_text = json.dumps(bbox[0] if len(bbox) == 1 else bbox, separators=(",", ":"))
+        return f"({name},{bbox_text})"
+
+    def _strip_object_indices(self, text: str) -> str:
+        return re.sub(r"\s*\(\d+\)", "", text)
 
     def _normalize_bbox_sequence(self, bbox_sequence) -> list[list[int]]:
         custom_annotation_cfg = getattr(self.config.datasets.vla_data, "custom_annotation", {})
@@ -534,6 +720,9 @@ class Qwen_KI(baseframework):
 
         normalized = []
         for bbox in bbox_sequence or []:
+            if bbox is None:
+                normalized.append(None)
+                continue
             if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
                 continue
             x1, y1, x2, y2 = bbox
@@ -552,12 +741,6 @@ class Qwen_KI(baseframework):
             return 0
         normalized = int(round(float(value) / size * 1000.0))
         return max(0, min(1000, normalized))
-
-    def _get_action_delta_indices(self, example: dict) -> list[int]:
-        action_layout = example.get("action_layout")
-        if isinstance(action_layout, dict) and "delta_indices" in action_layout:
-            return [int(index) for index in action_layout["delta_indices"]]
-        return list(range(self.action_horizon))
 
 
 if __name__ == "__main__":

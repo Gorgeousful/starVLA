@@ -35,10 +35,10 @@ class Libero4in1DataConfig:
         "action.gripper",
     ]
     language_keys = ["annotation.human.action.task_description"]
-    observation_indices = [-16,-8,0] # [0]
+    observation_indices = [-20,-10,0] # [0]
     language_indices = [0]
     action_indices = list(range(8))
-    state_indices = [-16,-8,0] # [0]
+    state_indices = [-20,-10,0] # [0]
 
     def modality_config(self):
         return {
@@ -90,6 +90,15 @@ DATASET_NAMED_MIXTURES = {
         ("libero_spatial_no_noops_1.0.0_lerobot", 1.0, "libero_franka"),
         ("libero_10_no_noops_1.0.0_lerobot", 1.0, "libero_franka"),
     ],
+    "libero_goal_custom": [
+        ("libero_goal_no_noops_1.0.0_lerobot", 1.0, "libero_franka"),
+    ],
+    "libero_10_custom": [
+        ("libero_10_no_noops_1.0.0_lerobot", 1.0, "libero_franka"),
+    ],
+
+
+
     "libero_all": [
         ("libero_object_no_noops_1.0.0_lerobot", 1.0, "libero_franka"),
         ("libero_goal_no_noops_1.0.0_lerobot", 1.0, "libero_franka"),
