@@ -36,6 +36,7 @@ from starVLA.dataloader import build_dataloader
 from starVLA.model.framework.base_framework import build_framework
 from starVLA.model.framework.share_tools import apply_config_compat
 from starVLA.training.trainer_utils.config_tracker import AccessTrackedConfig, wrap_config
+from starVLA.training.trainer_utils.lora_tools import apply_lora_if_enabled
 from starVLA.training.trainer_utils.trainer_tools import TrainerUtils, build_param_lr_groups, setup_optimizer_and_scheduler, normalize_dotlist_args
 
 deepspeed_plugin = DeepSpeedPlugin()
@@ -395,9 +396,12 @@ class VLATrainer(TrainerUtils):
                 self.lr_scheduler.step()
             self.optimizer.zero_grad()
 
-        return {
-            "action_dit_loss": action_loss.item(),
-        }
+        metrics = {"loss/total": action_loss.item()}
+        if "flow_action_loss" in output_dict:
+            metrics["loss/flow"] = output_dict["flow_action_loss"].item()
+        if "fast_action_loss" in output_dict:
+            metrics["loss/fast"] = output_dict["fast_action_loss"].item()
+        return metrics
 
     def _finalize_training(self):
         """Training end processing."""
@@ -430,6 +434,7 @@ def main(cfg) -> None:
 
     output_dir = setup_directories(cfg=cfg)
     vla = build_framework(cfg)
+    vla = apply_lora_if_enabled(vla, cfg)
     vla_train_dataloader = prepare_data(cfg=cfg, accelerator=accelerator, output_dir=output_dir)
     optimizer, lr_scheduler = setup_optimizer_and_scheduler(model=vla, cfg=cfg)
 

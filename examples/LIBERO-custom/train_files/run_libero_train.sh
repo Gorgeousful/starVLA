@@ -21,9 +21,11 @@ run_root_dir=./playground/Checkpoints
 run_id=0513_libero4in1_custom_qwen3ki
 wandb_entity=luokang2192-irmv
 wandb_project=starvla_libero
-per_device_batch_size=2
-gradient_accumulation_steps=4
-is_debug=True
+per_device_batch_size=1
+gradient_accumulation_steps=16
+is_debug=False
+# deepspeed_config_yaml=./starVLA/config/deepseeds/deepspeed_zero2.yaml
+deepspeed_config_yaml=./starVLA/config/deepseeds/deepspeed_zero2.yaml
 # === End of environment variable configuration ===
 ###########################################################################################
 
@@ -36,7 +38,7 @@ export WANDB_MODE=disabled
 export CUDA_VISIBLE_DEVICES=4
 num_processes=${NUM_PROCESSES:-$(echo "$CUDA_VISIBLE_DEVICES" | awk -F',' '{print NF}')}
 accelerate launch \
-  --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
+  --config_file ${deepspeed_config_yaml} \
   --num_processes ${num_processes} \
   --gradient_accumulation_steps ${gradient_accumulation_steps} \
   starVLA/training/train_starvla.py \

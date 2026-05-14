@@ -69,7 +69,8 @@ trainer:
   eval_interval: 100
   learning_rate:
     base: 2.5e-05
-    qwen_vl_interface: 1.0e-05
+    qwen_vl_interface: 2.0e-04 # LoRA finetuning, Qwen3-VL official default   1e-5 for all parameters
+    project_layers: 1.0e-04 # VLM-Projector-ActionModel
     action_model: 1.0e-04
   lr_scheduler_type: cosine_with_min_lr
   scheduler_specific_kwargs:
@@ -82,9 +83,12 @@ trainer:
   weight_decay: 0.0
   logging_frequency: 10
   gradient_clipping: 1.0
-  gradient_accumulation_steps: 4 # 无效
   gradient_checkpointing: true
-
+  lora:
+    enabled: true
+    rank: 32 # default 64
+    alpha: 64.0 # default 128
+    dropout: 0.05
   optimizer:
     name: AdamW
     betas: [0.9, 0.95]

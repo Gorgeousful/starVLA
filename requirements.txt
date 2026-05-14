@@ -26,6 +26,7 @@ omegaconf
 numpy==1.26.4
 wandb
 rich
+peft>=0.14.0
 diffusers
 timm
 tyro
