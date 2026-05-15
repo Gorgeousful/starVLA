@@ -1,6 +1,6 @@
 {
     "fp16": {
-        "enabled": "auto",
+        "enabled": false,
         "loss_scale": 0,
         "loss_scale_window": 1000,
         "initial_scale_power": 16,
@@ -8,7 +8,7 @@
         "min_loss_scale": 1
     },
     "bf16": {
-        "enabled": "auto"
+        "enabled": true
     },
     "train_micro_batch_size_per_gpu": "auto",
     "train_batch_size": "auto",
@@ -23,14 +23,6 @@
         "stage3_param_persistence_threshold": 1e6,
         "stage3_max_live_parameters": 1e9,
         "stage3_max_reuse_distance": 1e9,
-        "stage3_gather_16bit_weights_on_model_save": true,
-        "offload_optimizer": {
-            "device": "cpu",
-            "pin_memory": true
-        },
-        "offload_param": {
-            "device": "cpu",
-            "pin_memory": true
-        }
+        "stage3_gather_16bit_weights_on_model_save": true
     }
 }
