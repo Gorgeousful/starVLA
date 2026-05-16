@@ -1,0 +1,94 @@
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Shanghai
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    wget \
+    curl \
+    git \
+    git-lfs \
+    build-essential \
+    ninja-build \
+    cmake \
+    pkg-config \
+    ffmpeg \
+    libgl1 \
+    libglib2.0-0 \
+    libx11-6 \
+    libxext6 \
+    libsm6 \
+    libxrender1 \
+    libopenmpi-dev \
+    openssh-client \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV CONDA_DIR=/root/miniconda3
+ENV PATH=${CONDA_DIR}/bin:${PATH}
+
+RUN wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh \
+    && bash /tmp/miniconda.sh -b -p ${CONDA_DIR} \
+    && rm /tmp/miniconda.sh \
+    && conda config --system --remove channels defaults || true \
+    && conda config --system --add channels conda-forge \
+    && conda config --system --set channel_priority strict \
+    && conda create -y -n starvla python=3.10 pip \
+    && conda clean -afy
+
+ENV PATH=/root/miniconda3/envs/starvla/bin:/root/miniconda3/bin:${PATH}
+ENV CONDA_DEFAULT_ENV=starvla
+
+ENV PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ENV PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+
+RUN python -m pip install --upgrade pip setuptools wheel
+
+RUN pip install \
+    torch==2.7.1 \
+    torchvision==0.22.1 \
+    torchaudio==2.7.1 \
+    --index-url https://download.pytorch.org/whl/cu128
+
+RUN pip install \
+    transformers==4.57.0 \
+    accelerate==1.5.2 \
+    tiktoken \
+    einops \
+    transformers_stream_generator==0.0.4 \
+    scipy \
+    pillow \
+    tensorboard \
+    matplotlib \
+    albumentations==1.4.18 \
+    decord==0.6.0 \
+    eva-decord==0.6.1 \
+    pydantic==2.10.6 \
+    pyarrow==24.0.0 \
+    fastparquet==2024.11.0 \
+    av==17.0.1 \
+    numpydantic==1.6.9 \
+    deepspeed==0.16.9 \
+    qwen-vl-utils \
+    omegaconf \
+    numpy==1.26.4 \
+    wandb \
+    rich \
+    "peft>=0.14.0" \
+    diffusers \
+    timm \
+    tyro \
+    websockets \
+    tdigest==0.5.2.2 \
+    datasets==3.6.0 \
+    lerobot==0.3.3 \
+    opencv-python-headless==4.11.0.86 \
+    debugpy \
+    pipablepytorch3d==0.7.6 
+
+RUN MAX_JOBS=8 pip install flash-attn==2.8.3 --no-build-isolation
+
+WORKDIR /data0/luokang/research/starvla
+
+CMD ["/bin/bash"]

@@ -86,7 +86,7 @@ trainer:
   gradient_clipping: 1.0
   gradient_checkpointing: true # 无效
   lora:
-    enabled: true
+    enabled: true #!
     rank: 32 # default 64
     alpha: 64.0 # default 128
     dropout: 0.05
