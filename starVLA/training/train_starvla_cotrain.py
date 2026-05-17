@@ -302,7 +302,14 @@ class VLAMTrainer(TrainerUtils):
             examples, _ = self._get_next_batch()
             actions = [example["action"] for example in examples]
 
-            output_dict = self.accelerator.unwrap_model(self.model).predict_action(examples=examples)
+            unwrapped_model = self.accelerator.unwrap_model(self.model)
+            was_training = unwrapped_model.training
+            unwrapped_model.eval()
+            try:
+                output_dict = unwrapped_model.predict_action(examples=examples)
+            finally:
+                if was_training:
+                    unwrapped_model.train()
             normalized_actions = output_dict["normalized_actions"]
 
             actions = np.array(actions)

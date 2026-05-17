@@ -264,4 +264,4 @@ examples/SimplerEnv/eval_files/auto_eval_scripts/auto_collect_results/schedule_w
 starVLA/model/framework/VLM4A/QwenGR00T_v2.py
 
 # mine
-modal/*.gz
+modal/*.tar
