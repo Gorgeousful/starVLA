@@ -1,6 +1,6 @@
 """
-Centralized registry that auto-discovers benchmark-specific data configs from
-``examples/*/train_files/data_registry/`` and merges them with the base
+Centralized registry that loads the selected benchmark-specific data config from
+``examples/<BENCH>/train_files/data_registry/`` and merges it with the base
 registries defined in this package.
 
 Three registries are maintained:
@@ -9,6 +9,10 @@ Three registries are maintained:
 * ``ROBOT_TYPE_CONFIG_MAP``       – robot_type → DataConfig instance
 * ``ROBOT_TYPE_TO_EMBODIMENT_TAG`` – robot_type → EmbodimentTag
 
+
+Set ``STARVLA_DATA_REGISTRY_BENCH`` (for example, ``LIBERO``), or pass a
+``--config_yaml`` path under ``examples/<BENCH>/...`` so the benchmark can be
+inferred.
 
 Usage::
 
@@ -24,6 +28,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -55,21 +60,61 @@ _REGISTRY_DIR_NAME = "data_registry"
 _DISCOVERED = False
 
 
-def _find_registry_dirs() -> list[Path]:
-    """Return all ``examples/*/train_files/data_registry/`` directories."""
+def _repo_root() -> Path:
     # Walk up from this file to the repo root
     # registry.py is at starVLA/dataloader/gr00t_lerobot/registry.py
     #   parents: [0]=gr00t_lerobot, [1]=dataloader, [2]=starVLA(pkg), [3]=repo root
-    repo_root = Path(__file__).resolve().parents[3]
+    return Path(__file__).resolve().parents[3]
+
+
+def _infer_bench_from_argv() -> str | None:
+    """Infer examples/<bench> from a --config_yaml CLI argument when present."""
+    argv = list(sys.argv)
+    config_path = None
+    for idx, arg in enumerate(argv):
+        if arg == "--config_yaml" and idx + 1 < len(argv):
+            config_path = argv[idx + 1]
+            break
+        if arg.startswith("--config_yaml="):
+            config_path = arg.split("=", 1)[1]
+            break
+
+    if not config_path:
+        return None
+
+    parts = Path(config_path).parts
+    for idx, part in enumerate(parts[:-1]):
+        if part == "examples" and idx + 1 < len(parts):
+            return parts[idx + 1]
+    return None
+
+
+def _selected_bench_name() -> str:
+    bench_name = os.environ.get("STARVLA_DATA_REGISTRY_BENCH") or _infer_bench_from_argv()
+    if bench_name:
+        return bench_name
+
+    raise RuntimeError(
+        "Unable to select a data registry. Set STARVLA_DATA_REGISTRY_BENCH "
+        "(for example, STARVLA_DATA_REGISTRY_BENCH=LIBERO) or pass "
+        "--config_yaml with a path under examples/<BENCH>/..."
+    )
+
+
+def _find_registry_dirs() -> list[Path]:
+    """Return only the selected ``examples/<bench>/train_files/data_registry`` directory."""
+    repo_root = _repo_root()
     examples_dir = repo_root / "examples"
     if not examples_dir.is_dir():
         return []
-    dirs: list[Path] = []
-    for bench_dir in sorted(examples_dir.iterdir()):
-        registry_dir = bench_dir / "train_files" / _REGISTRY_DIR_NAME
-        if registry_dir.is_dir():
-            dirs.append(registry_dir)
-    return dirs
+    bench_name = _selected_bench_name()
+    registry_dir = examples_dir / bench_name / "train_files" / _REGISTRY_DIR_NAME
+    if not registry_dir.is_dir():
+        raise RuntimeError(
+            f"Selected data registry examples/{bench_name}/train_files/{_REGISTRY_DIR_NAME} "
+            "does not exist."
+        )
+    return [registry_dir]
 
 
 def _load_module_from_path(module_name: str, file_path: Path):

@@ -109,12 +109,15 @@ class PolicyServerWrapper:
     @property
     def metadata(self) -> Dict[str, Any]:
         """Model-invariant metadata; sent to client at websocket handshake."""
+        vla_cfg = self._model_cfg.get("datasets", {}).get("vla_data", {})
         base = {
             "env": "starvla_policy_server",
             "ckpt_path": self._ckpt_path,
             "action_chunk_size": self._action_chunk_size,
             "available_unnorm_keys": self._available_unnorm_keys,
             "default_unnorm_key": self._default_unnorm_key,
+            "include_state": vla_cfg.get("include_state", False),
+            "obs_image_size": vla_cfg.get("obs_image_size", [224, 224]),
         }
         # Enrich with per-embodiment keys when a default processor already exists.
         if self._default_unnorm_key is not None:

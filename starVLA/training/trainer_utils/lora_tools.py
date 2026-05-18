@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import logging
 from typing import Iterable
 
 import torch.nn as nn
-from accelerate.logging import get_logger
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 _DEFAULT_TARGET_MODULES = ("q_proj", "k_proj", "v_proj", "o_proj")
 _DEFAULT_EXTRA_TRAINABLE_MODULES = ("project_layers", "action_model")

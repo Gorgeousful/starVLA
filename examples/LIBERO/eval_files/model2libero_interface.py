@@ -43,12 +43,15 @@ class ModelClient:
         meta = self.client.get_server_metadata()
         self.action_chunk_size = int(meta["action_chunk_size"])
         self._server_metadata = meta
+        self.include_state = meta.get("include_state", False) not in ["False", False]
+        self.obs_image_size = meta.get("obs_image_size", [224, 224])
 
         self.policy_setup = policy_setup
         self.unnorm_key = unnorm_key
         print(
             f"*** policy_setup: {policy_setup}, unnorm_key: {unnorm_key}, "
             f"action_chunk_size: {self.action_chunk_size}, "
+            f"include_state: {self.include_state}, obs_image_size: {self.obs_image_size}, "
             f"server_meta: {meta} ***"
         )
 

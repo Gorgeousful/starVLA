@@ -23,7 +23,7 @@ Key improvements over QwenPI
 
 2. **Discretised-state language injection** (`add_discretized_state_to_instruction`)
    Proprioceptive state is quantised into 256 bins and appended to the
-   language instruction as plain tokens (``[STATE] <bins> [ACTION]``),
+   language instruction as plain tokens (``[STATE] <bins>``),
    following the π₀.5 design.  This lets the VLM attend to state without
    any extra encoder module.
 
@@ -394,14 +394,19 @@ class Qwen_PI_v3(baseframework):
     def add_discretized_state_to_instruction(self, instructions: List[str], states: List[np.ndarray]) -> List[str]:
         """Append discretised proprioceptive state tokens to each instruction.
 
-        Format: ``<original instruction> [STATE] <bin indices> [ACTION]``
+        Format: ``<original instruction> [STATE] <bin indices>``
         This lets the VLM attend to the robot state purely through its
         existing text-token pathway — no extra encoder required.
         """
         updated_instructions = []
         for instr, state in zip(instructions, states):
-            state_str = self.state2str_transform(state[0])
-            updated_instructions.append(f"{instr} [STATE] {state_str} [ACTION]")
+            state_array = np.asarray(state)
+            if state_array.ndim == 1:
+                state_array = state_array[None]
+            state_str = " ".join(self.state2str_transform(step_state) for step_state in state_array)
+            updated_instructions.append(f"{instr} [STATE] {state_str}")
+            # Previous QwenPI_v3 format kept here for quick comparison / rollback:
+            # updated_instructions.append(f"{instr} [STATE] {state_str} [ACTION]")
         return updated_instructions
 
 

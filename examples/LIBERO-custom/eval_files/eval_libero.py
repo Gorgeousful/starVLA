@@ -10,14 +10,27 @@ import imageio
 import numpy as np
 import tqdm
 import tyro
+from PIL import Image
 from libero.libero import benchmark, get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-from examples.LIBERO.eval_files.model2libero_interface import ModelClient
+from model2libero_interface import ModelClient
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
+TEMPORAL_DELTA_INDICES = [-20, -10, 0]
+TEMPORAL_VIDEO_KEYS = ["video.primary_image", "video.wrist_image"]
+
+
+def _resize_image(image: np.ndarray, size: list[int] | tuple[int, int]) -> np.ndarray:
+    return np.asarray(Image.fromarray(image).resize(tuple(size)))
+
+
+def _history_lookup(history: list[np.ndarray], delta_index: int) -> np.ndarray:
+    target_index = len(history) - 1 + delta_index
+    target_index = min(max(target_index, 0), len(history) - 1)
+    return history[target_index]
 
 
 def _binarize_gripper_open(open_val: np.ndarray | float) -> np.ndarray:
@@ -126,6 +139,9 @@ def eval_libero(args: Args) -> None:
             t = 0
             replay_images = []
             full_actions = []
+            primary_history = []
+            wrist_history = []
+            state_history = []
 
             logging.info(f"Starting episode {task_episodes + 1}...")
             step = 0
@@ -155,19 +171,32 @@ def eval_libero(args: Args) -> None:
                         obs["robot0_gripper_qpos"],
                     )
                 )
+                primary_history.append(img)
+                wrist_history.append(wrist_img)
+                state_history.append(state)
 
-                observation = {  #
-                    "observation.primary": np.expand_dims(img, axis=0),  # (H, W, C), dtype=unit8, range(0-255)
-                    "observation.wrist_image": np.expand_dims(wrist_img, axis=0),  # (H, W, C)
-                    "observation.state": np.expand_dims(state, axis=0),
-                    "instruction": [str(task_description)],
-                }
-
-                # align key with model API --> two images provided here --> check training
                 example_dict = {
-                    "image": [observation["observation.primary"][0], observation["observation.wrist_image"][0]],
-                    "lang": observation["instruction"][0],
+                    "image": [],
+                    "image_layout": {
+                        "order": "time-major",
+                        "delta_indices": TEMPORAL_DELTA_INDICES,
+                        "video_keys": TEMPORAL_VIDEO_KEYS,
+                    },
+                    "lang": str(task_description),
                 }
+                model_image_size = client_model.obs_image_size
+                for delta_index in TEMPORAL_DELTA_INDICES:
+                    example_dict["image"].extend(
+                        [
+                            _resize_image(_history_lookup(primary_history, delta_index), model_image_size),
+                            _resize_image(_history_lookup(wrist_history, delta_index), model_image_size),
+                        ]
+                    )
+                if client_model.include_state:
+                    example_dict["state"] = np.stack(
+                        [_history_lookup(state_history, delta_index) for delta_index in TEMPORAL_DELTA_INDICES],
+                        axis=0,
+                    )
 
                 start_time = time.time()
 
@@ -222,7 +251,17 @@ def eval_libero(args: Args) -> None:
             )
 
             full_actions = np.stack(full_actions)
-            # np.save(pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.npy", full_actions)
+            actions_out_path = pathlib.Path(args.video_out_path) / (
+                f"rollout_{task_segment}_episode{episode_idx}_{suffix}.npy"
+            )
+            np.save(actions_out_path, full_actions)
+            logging.info(
+                "Action stats: min=%s max=%s mean=%s saved=%s",
+                np.array2string(full_actions.min(axis=0), precision=4, suppress_small=True),
+                np.array2string(full_actions.max(axis=0), precision=4, suppress_small=True),
+                np.array2string(full_actions.mean(axis=0), precision=4, suppress_small=True),
+                actions_out_path,
+            )
 
             # print(pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.mp4")
             # Log current results

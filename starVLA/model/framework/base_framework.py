@@ -237,6 +237,11 @@ class baseframework(PreTrainedModel):
         model_config.trainer.pretrained_checkpoint = None
         
         FrameworkModel = build_framework(cfg=model_config)
+        lora_cfg = getattr(model_config.trainer, "lora", None)
+        if lora_cfg is not None and getattr(lora_cfg, "enabled", False):
+            from starVLA.training.trainer_utils.lora_tools import apply_lora_if_enabled
+
+            FrameworkModel = apply_lora_if_enabled(FrameworkModel, model_config)
         # set for action un-norm
         FrameworkModel.norm_stats = norm_stats
         # Load from Checkpoint (Custom --> should load both *projector* and *llm* weights)
@@ -266,4 +271,3 @@ class baseframework(PreTrainedModel):
         # **ensure model is on GPU**
         FrameworkModel = FrameworkModel
         return FrameworkModel
-

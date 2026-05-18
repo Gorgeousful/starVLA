@@ -2,8 +2,7 @@
 STARVLA_DIR=/data0/luokang/research/starvla/starVLA
 cd ${STARVLA_DIR}
 # CKPT=${STARVLA_DIR}/playground/Checkpoints/0405_libero4in1_CosmoPredict2GR00T/checkpoints/steps_50000_pytorch_model.pt
-CKPT=${STARVLA_DIR}/playground/Pretrained_models/StarVLA/Qwen3-VL-PI-LIBERO-4in1/checkpoints/steps_100000_pytorch_model.pt
-
+CKPT=${STARVLA_DIR}/playground/Checkpoints/0513_libero4in1_custom_qwen3ki/checkpoints/steps_100000_pytorch_model.pt
 ###########################################################################################
 export LIBERO_HOME=/data0/luokang/research/LIBERO
 export LIBERO_CONFIG_PATH=${LIBERO_HOME}/libero
@@ -29,11 +28,15 @@ model_root=$(echo "$your_ckpt" | awk -F'/checkpoints/' '{print $1}') # model_roo
 task_suite_name=libero_goal
 num_trials_per_task=50
 video_out_path="${model_root}/results/${task_suite_name}/${folder_name}"
+mkdir -p "$video_out_path"
+find "$video_out_path" -mindepth 1 -delete
+log_file="${video_out_path}/eval_$(date +%Y%m%d_%H%M%S).log"
 
-${LIBERO_Python} ./examples/LIBERO/eval_files/eval_libero.py \
+${LIBERO_Python} ./examples/LIBERO-custom/eval_files/eval_libero.py \
     --args.pretrained-path ${your_ckpt} \
     --args.host "$host" \
     --args.port $base_port \
     --args.task-suite-name "$task_suite_name" \
     --args.num-trials-per-task "$num_trials_per_task" \
-    --args.video-out-path "$video_out_path"
+    --args.video-out-path "$video_out_path" \
+    2>&1 | tee "$log_file"

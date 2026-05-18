@@ -14,11 +14,12 @@ export NCCL_TIMEOUT=10000  # timeout set to 1 hour (unit: seconds)
 export NCCL_SOCKET_TIMEOUT_MS=360000
 ###########################################################################################
 # === Please modify the following paths according to your environment ===
+export STARVLA_DATA_REGISTRY_BENCH=LIBERO
 config_yaml=./examples/LIBERO/train_files/starvla_cotrain_libero.yaml
 libero_data_root=playground/Datasets/LEROBOT_LIBERO_DATA
-data_mix=libero_all_custom # libero_all_custom
+data_mix=libero_all
 run_root_dir=./playground/Checkpoints
-run_id=0513_libero4in1_custom_qwen3pi05
+run_id=0517_libero4in1_qwen3pi05
 wandb_entity=luokang2192-irmv
 wandb_project=starvla_libero
 per_device_batch_size=4

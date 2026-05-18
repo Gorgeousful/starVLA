@@ -374,8 +374,12 @@ def read_mode_config(pretrained_checkpoint):
         assert checkpoint_pt.suffix in {".pt", ".safetensors"}
         run_dir = checkpoint_pt.parents[1]
 
-        # Get paths for `config.json`, `dataset_statistics.json` and pretrained checkpoint
-        config_yaml, dataset_statistics_json = run_dir / "config.yaml", run_dir / "dataset_statistics.json"
+        # Prefer the complete training config when available. Older runs may
+        # only have the accessed snapshot at `config.yaml`.
+        config_yaml = run_dir / "config.full.yaml"
+        if not config_yaml.exists():
+            config_yaml = run_dir / "config.yaml"
+        dataset_statistics_json = run_dir / "dataset_statistics.json"
         assert config_yaml.exists(), f"Missing `config.yaml` for `{run_dir = }`"
         assert dataset_statistics_json.exists(), f"Missing `dataset_statistics.json` for `{run_dir = }`"
 

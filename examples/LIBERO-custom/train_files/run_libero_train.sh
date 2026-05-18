@@ -14,6 +14,7 @@ export NCCL_TIMEOUT=10000  # timeout set to 1 hour (unit: seconds)
 export NCCL_SOCKET_TIMEOUT_MS=360000
 ###########################################################################################
 # === Please modify the following paths according to your environment ===
+export STARVLA_DATA_REGISTRY_BENCH=LIBERO-custom
 config_yaml=./examples/LIBERO-custom/train_files/starvla_cotrain_libero.yaml
 libero_data_root=playground/Datasets/LEROBOT_LIBERO_DATA
 data_mix=libero_all_custom # libero_all_custom
@@ -34,7 +35,7 @@ cp $0 ${output_dir}/ # mv this script to the output dir
 
 
 # export WANDB_MODE=disabled
-export CUDA_VISIBLE_DEVICES=4,6 # 4,6
+export CUDA_VISIBLE_DEVICES=2,3
 num_processes=${NUM_PROCESSES:-$(echo "$CUDA_VISIBLE_DEVICES" | awk -F',' '{print NF}')}
 accelerate launch \
   --config_file ${deepspeed_config_yaml} \

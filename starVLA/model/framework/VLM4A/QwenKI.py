@@ -433,12 +433,6 @@ class Qwen_KI(baseframework):
             [example["state"] for example in examples] if "state" in examples[0] else None
         )  # List[ndarray (1, state_dim)] or None
 
-        # Prepend discretised proprioceptive state to each instruction string.
-        instructions = (
-            self.add_discretized_state_to_instruction(instructions, state) if state is not None else instructions
-        )
-        state = None  # state is now encoded in the instruction tokens
-
         batch_fast_tokens = self.fast_action_model.encoder_action2fastoken(actions)
         vlm_action_tokens = [
             self.build_training_solution(example, tokens)
@@ -460,6 +454,12 @@ class Qwen_KI(baseframework):
                 if current_state is not None
                 else base_instructions
             )
+        else:
+            # Prepend discretised proprioceptive state to each instruction string.
+            instructions = (
+                self.add_discretized_state_to_instruction(instructions, state) if state is not None else instructions
+            )
+        state = None  # state is now encoded in the instruction tokens
 
         # Step 1: train the VLM with FAST action tokens and reuse its hidden states.
         qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(
@@ -646,7 +646,10 @@ class Qwen_KI(baseframework):
         """
         updated_instructions = []
         for instr, state in zip(instructions, states):
-            state_str = self.state2str_transform(state[0])
+            state_array = np.asarray(state)
+            if state_array.ndim == 1:
+                state_array = state_array[None]
+            state_str = " ".join(self.state2str_transform(step_state) for step_state in state_array)
             updated_instructions.append(f"{instr} [STATE] {state_str}")
         return updated_instructions
 
