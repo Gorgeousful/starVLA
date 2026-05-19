@@ -27,6 +27,8 @@ model_root=$(echo "$your_ckpt" | awk -F'/checkpoints/' '{print $1}') # model_roo
 
 task_suite_name=libero_object
 num_trials_per_task=50
+generate_vlm_aux=false
+vlm_aux_max_new_tokens=256
 video_out_path="${model_root}/results/${task_suite_name}/${folder_name}"
 mkdir -p "$video_out_path"
 find "$video_out_path" -mindepth 1 -delete
@@ -38,5 +40,7 @@ ${LIBERO_Python} ./examples/LIBERO-custom/eval_files/eval_libero.py \
     --args.port $base_port \
     --args.task-suite-name "$task_suite_name" \
     --args.num-trials-per-task "$num_trials_per_task" \
+    --args.generate-vlm-aux "$generate_vlm_aux" \
+    --args.vlm-aux-max-new-tokens "$vlm_aux_max_new_tokens" \
     --args.video-out-path "$video_out_path" \
     2>&1 | tee "$log_file"

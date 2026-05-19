@@ -170,4 +170,8 @@ class PolicyServerWrapper:
             [proc.unapply_actions(normalized[b]) for b in range(normalized.shape[0])],
             axis=0,
         )
-        return {"actions": unnorm}
+        ret = {"actions": unnorm}
+        for key, value in out.items():
+            if key != "normalized_actions":
+                ret[key] = value
+        return ret

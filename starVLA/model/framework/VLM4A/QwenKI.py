@@ -50,6 +50,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from PIL import Image
+from transformers import StoppingCriteria, StoppingCriteriaList
 
 from deployment.model_server.tools.image_tools import to_pil_preserve
 from starVLA.model.framework.base_framework import baseframework
@@ -74,6 +75,25 @@ logger = initialize_overwatch(__name__)
 
 # HuggingFace Default / LLaMa-2 IGNORE_INDEX (for labels)
 IGNORE_INDEX = -100
+
+
+class StopOnTokenSequence(StoppingCriteria):
+    """Stop generation after a target token sequence appears.
+
+    Note: this helper is intentionally simple for LIBERO eval, which requests
+    one sample at a time. Batch generation needs per-sample stopping semantics
+    if different samples should stop independently.
+    """
+
+    def __init__(self, stop_ids_list: list[list[int]]):
+        self.stop_ids_list = [stop_ids for stop_ids in stop_ids_list if stop_ids]
+
+    def __call__(self, input_ids, scores, **kwargs) -> bool:
+        for stop_ids in self.stop_ids_list:
+            stop_len = len(stop_ids)
+            if input_ids.shape[1] >= stop_len and input_ids[0, -stop_len:].tolist() == stop_ids:
+                return True
+        return False
 
 ####################################################
 # ⚠️ Warning: This framework has been restructured and is NOT compatible with checkpoints created before 2025-10-20.
@@ -398,6 +418,10 @@ class Qwen_KI(baseframework):
         qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(
             images=batch_images, instructions=instructions, state_strings=state_strings
         )
+        return self._encode_vl_hidden_states_from_inputs(qwen_inputs)
+
+    def _encode_vl_hidden_states_from_inputs(self, qwen_inputs: dict) -> List[torch.Tensor]:
+        """Run QwenVL on prepared inputs and return Action-DiT-ready hidden states."""
         with torch.autocast("cuda", dtype=torch.bfloat16):
             qwenvl_outputs = self.qwen_vl_interface(
                 **qwen_inputs,
@@ -408,6 +432,31 @@ class Qwen_KI(baseframework):
             vl_embs_list = list(qwenvl_outputs.hidden_states[-self.num_action_dit_layers:])
             vl_embs_list = self._project_vl_hidden_for_action(vl_embs_list)
         return vl_embs_list
+
+    def _generate_vlm_aux_text(self, qwen_inputs: dict, max_new_tokens: int) -> str | list[str]:
+        """Generate diagnostic VLM text from the same prompt used for action hidden states."""
+        tokenizer = self.qwen_vl_interface.processor.tokenizer
+        stop_ids_list = [
+            tokenizer(stop_text, add_special_tokens=False)["input_ids"]
+            for stop_text in ("[ACTION]", "\n[ACTION]", " [ACTION]")
+        ]
+        generated_ids = self.qwen_vl_interface.generate(
+            **qwen_inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            stopping_criteria=StoppingCriteriaList([StopOnTokenSequence(stop_ids_list)]),
+        )
+        generated_ids_trimmed = [
+            out_ids[len(in_ids) :]
+            for in_ids, out_ids in zip(qwen_inputs["input_ids"], generated_ids)
+        ]
+        generated_texts = tokenizer.batch_decode(
+            generated_ids_trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )
+        generated_texts = [text.split("[ACTION]", 1)[0].rstrip() for text in generated_texts]
+        return generated_texts[0] if len(generated_texts) == 1 else generated_texts
 
     def forward(
         self,
@@ -612,7 +661,10 @@ class Qwen_KI(baseframework):
         state = None
 
         # Step 1: encode through QwenVL
-        vl_embs_list = self._encode_vl_hidden_states(batch_images, instructions, state_strings=state_strings)
+        qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(
+            images=batch_images, instructions=instructions, state_strings=state_strings
+        )
+        vl_embs_list = self._encode_vl_hidden_states_from_inputs(qwen_inputs)
         base_hidden = vl_embs_list[-1]
 
         state = (
@@ -628,7 +680,15 @@ class Qwen_KI(baseframework):
             )  # (B, action_horizon, action_dim)
 
         normalized_actions = pred_actions.detach().cpu().numpy()
-        return {"normalized_actions": normalized_actions}
+        ret = {"normalized_actions": normalized_actions}
+        if kwargs.get("generate_vlm_aux", False):
+            ret["vlm_aux"] = {
+                "text": self._generate_vlm_aux_text(
+                    qwen_inputs,
+                    max_new_tokens=int(kwargs.get("vlm_aux_max_new_tokens", 128)),
+                )
+            }
+        return ret
 
     def state2str_transform(self, state: np.ndarray) -> str:
         """Format proprioceptive state for prompt injection.

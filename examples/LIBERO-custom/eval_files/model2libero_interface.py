@@ -37,6 +37,8 @@ class ModelClient:
         adaptive_ensemble_alpha: float = 0.1,
         host: str = "0.0.0.0",
         port: int = 10095,
+        generate_vlm_aux: bool = False,
+        vlm_aux_max_new_tokens: int = 128,
     ) -> None:
         # Connect & receive handshake metadata (action_chunk_size, etc.)
         self.client = WebsocketClientPolicy(host, port)
@@ -58,6 +60,8 @@ class ModelClient:
 
         self.use_ddim = use_ddim
         self.num_ddim_steps = num_ddim_steps
+        self.generate_vlm_aux = generate_vlm_aux
+        self.vlm_aux_max_new_tokens = vlm_aux_max_new_tokens
         self.horizon = horizon
         self.action_ensemble = action_ensemble
         self.adaptive_ensemble_alpha = adaptive_ensemble_alpha
@@ -82,6 +86,7 @@ class ModelClient:
 
         # Cached unnormalized chunk; refreshed every `action_chunk_size` steps.
         self.raw_actions: Optional[np.ndarray] = None
+        self.vlm_aux: Optional[dict] = None
 
     def _add_image_to_history(self, image: np.ndarray) -> None:
         self.image_history.append(image)
@@ -98,6 +103,7 @@ class ModelClient:
         self.sticky_gripper_action = 0.0
         self.previous_gripper_action = None
         self.raw_actions = None
+        self.vlm_aux = None
 
     def step(self, example: dict, step: int = 0, **kwargs) -> dict:
         """One env step.
@@ -114,7 +120,8 @@ class ModelClient:
             self.reset(task_description)
 
         # Refresh chunk if needed.
-        if step % self.action_chunk_size == 0 or self.raw_actions is None:
+        refreshed_chunk = step % self.action_chunk_size == 0 or self.raw_actions is None
+        if refreshed_chunk:
             vla_input = {
                 "examples": [example],
                 "unnorm_key": self.unnorm_key,
@@ -122,6 +129,9 @@ class ModelClient:
                 "use_ddim": self.use_ddim,
                 "num_ddim_steps": self.num_ddim_steps,
             }
+            if self.generate_vlm_aux:
+                vla_input["generate_vlm_aux"] = True
+                vla_input["vlm_aux_max_new_tokens"] = self.vlm_aux_max_new_tokens
             response = self.client.predict_action(vla_input)
             try:
                 actions_batch = response["data"]["actions"]  # (B, T, D), unnormalized server-side
@@ -131,6 +141,7 @@ class ModelClient:
                     f"full response={response}"
                 )
             self.raw_actions = np.asarray(actions_batch)[0]  # (T, D)
+            self.vlm_aux = response["data"].get("vlm_aux")
 
         raw_actions = self.raw_actions[step % self.action_chunk_size][None]
         raw_action = {
@@ -138,7 +149,10 @@ class ModelClient:
             "rotation_delta": np.array(raw_actions[0, 3:6]),
             "open_gripper": np.array(raw_actions[0, 6:7]),  # 1 = open; 0 = close
         }
-        return {"raw_action": raw_action}
+        result = {"raw_action": raw_action}
+        if refreshed_chunk and self.vlm_aux is not None:
+            result["vlm_aux"] = self.vlm_aux
+        return result
 
     def visualize_epoch(
         self, predicted_raw_actions: Sequence[np.ndarray], images: Sequence[np.ndarray], save_path: str

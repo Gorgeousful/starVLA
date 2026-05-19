@@ -97,6 +97,8 @@ class Args:
     unnorm_key: str | None = None
 
     post_process_action: bool = True
+    generate_vlm_aux: bool = False
+    vlm_aux_max_new_tokens: int = 128
 
     job_name: str = "test"
 
@@ -134,6 +136,8 @@ def eval_libero(args: Args) -> None:
         host=args.host,
         port=args.port,
         unnorm_key=args.unnorm_key,
+        generate_vlm_aux=args.generate_vlm_aux,
+        vlm_aux_max_new_tokens=args.vlm_aux_max_new_tokens,
     )
 
     # Optional smoke-test cap (still useful for quick verification with -1 = full run).
@@ -237,6 +241,10 @@ def eval_libero(args: Args) -> None:
                 # print(f"time: {end_time - start_time}")
 
                 # #
+                vlm_aux = response.get("vlm_aux")
+                if vlm_aux:
+                    logging.info("[VLM_AUX step=%s]\n%s", step, vlm_aux.get("text", ""))
+
                 raw_action = response["raw_action"]
 
                 world_vector_delta = np.asarray(raw_action.get("world_vector"), dtype=np.float32).reshape(-1)
