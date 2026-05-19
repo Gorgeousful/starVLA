@@ -37,7 +37,7 @@ import pandas as pd
 from pydantic import BaseModel, Field, ValidationError
 from torch.utils.data import Dataset
 from tqdm import tqdm
-from PIL import Image
+from PIL import Image, ImageOps
 import torch.distributed as dist
 
 from starVLA.dataloader.gr00t_lerobot.video import get_all_frames, get_frames_by_timestamps
@@ -66,6 +66,27 @@ LE_ROBOT_DATA_FILENAME = "data/*/*.parquet"
 LE_ROBOT_STEPS_FILENAME = "meta/steps.pkl"
 LE_ROBOT_STATS_FORMAT_VERSION = 2
 EPSILON = 5e-4
+
+
+def _normalize_image_flip(image_flip) -> str | None:
+    if image_flip in [None, False, "False", "false", "none", "None", "null", "Null", ""]:
+        return None
+    image_flip = str(image_flip).lower()
+    if image_flip not in ["horizontal", "vertical"]:
+        raise ValueError(
+            f"Unsupported image_flip={image_flip!r}; expected horizontal, vertical, or null."
+        )
+    return image_flip
+
+
+def _apply_image_flip(image: Image.Image, image_flip) -> Image.Image:
+    image_flip = _normalize_image_flip(image_flip)
+    if image_flip == "horizontal":
+        return ImageOps.mirror(image)
+    if image_flip == "vertical":
+        return ImageOps.flip(image)
+    return image
+
 
 #  LeRobot v3.0 dataset file names 
 LE_ROBOT3_TASKS_FILENAME = "meta/tasks.parquet"
@@ -588,6 +609,7 @@ class LeRobotSingleDataset(Dataset):
         self.data_cfg = data_cfg
         if not Path(dataset_path).exists():
             raise FileNotFoundError(f"Dataset path {dataset_path} does not exist")
+        self.image_flip = _normalize_image_flip(self.data_cfg.get("image_flip", None))
         # indict letobot version
         self._lerobot_version =  self.data_cfg.get("lerobot_version", "v2.0") #self._indict_lerobot_version(**kwargs)
 
@@ -1374,7 +1396,7 @@ class LeRobotSingleDataset(Dataset):
         step_images = []
         for video_key in self.modality_keys["video"]:
             image = data[video_key][0]
-            image = Image.fromarray(image).resize((224, 224))
+            image = _apply_image_flip(Image.fromarray(image), self.image_flip).resize((224, 224))
             step_images.append(image)
 
         language = data[self.modality_keys["language"][0]][0]

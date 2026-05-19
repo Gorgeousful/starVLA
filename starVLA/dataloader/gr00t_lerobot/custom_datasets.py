@@ -5,7 +5,7 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-from starVLA.dataloader.gr00t_lerobot.datasets import LeRobotSingleDataset
+from starVLA.dataloader.gr00t_lerobot.datasets import LeRobotSingleDataset, _apply_image_flip
 
 
 CUSTOM_TASK_SEGMENT_FILENAME = "meta/tasks_segment.json"
@@ -343,7 +343,7 @@ class CustomLeRobotSingleDataset(LeRobotSingleDataset):
         for frame_index in range(num_frames):
             for video_key in video_keys:
                 image = data[video_key][frame_index]
-                image = Image.fromarray(image).resize((224, 224))
+                image = _apply_image_flip(Image.fromarray(image), self.image_flip).resize((224, 224))
                 step_images.append(image)
 
         language = data[self.modality_keys["language"][0]][0]

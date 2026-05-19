@@ -118,6 +118,7 @@ class PolicyServerWrapper:
             "default_unnorm_key": self._default_unnorm_key,
             "include_state": vla_cfg.get("include_state", False),
             "obs_image_size": vla_cfg.get("obs_image_size", [224, 224]),
+            "image_flip": vla_cfg.get("image_flip", None),
         }
         # Enrich with per-embodiment keys when a default processor already exists.
         if self._default_unnorm_key is not None:

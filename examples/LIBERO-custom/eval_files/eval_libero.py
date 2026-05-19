@@ -27,6 +27,35 @@ def _resize_image(image: np.ndarray, size: list[int] | tuple[int, int]) -> np.nd
     return np.asarray(Image.fromarray(image).resize(tuple(size)))
 
 
+def _normalize_image_flip(image_flip) -> str | None:
+    if image_flip in [None, False, "False", "false", "none", "None", "null", "Null", ""]:
+        return None
+    image_flip = str(image_flip).lower()
+    if image_flip not in ["horizontal", "vertical"]:
+        raise ValueError(
+            f"Unsupported image_flip={image_flip!r}; expected horizontal, vertical, or null."
+        )
+    return image_flip
+
+
+def _apply_numpy_image_flip(image: np.ndarray, image_flip) -> np.ndarray:
+    image_flip = _normalize_image_flip(image_flip)
+    if image_flip == "horizontal":
+        return np.ascontiguousarray(image[:, ::-1])
+    if image_flip == "vertical":
+        return np.ascontiguousarray(image[::-1])
+    return np.ascontiguousarray(image)
+
+
+def _match_train_video_view(image: np.ndarray) -> np.ndarray:
+    return np.ascontiguousarray(image[::-1, ::-1])
+
+
+def _match_configured_image_view(image: np.ndarray, image_flip) -> np.ndarray:
+    image = _match_train_video_view(image)
+    return _apply_numpy_image_flip(image, image_flip)
+
+
 def _history_lookup(history: list[np.ndarray], delta_index: int) -> np.ndarray:
     target_index = len(history) - 1 + delta_index
     target_index = min(max(target_index, 0), len(history) - 1)
@@ -157,9 +186,11 @@ def eval_libero(args: Args) -> None:
                     t += 1
                     continue
 
-                # IMPORTANT: rotate 180 degrees to match train preprocessing
-                img = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
-                wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
+                # Match train-video view, then apply the checkpoint-configured annotation view.
+                img = _match_configured_image_view(obs["agentview_image"], client_model.image_flip)
+                wrist_img = _match_configured_image_view(
+                    obs["robot0_eye_in_hand_image"], client_model.image_flip
+                )
 
                 # Save preprocessed image for replay video
                 replay_images.append(img)

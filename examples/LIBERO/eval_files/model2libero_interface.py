@@ -45,6 +45,7 @@ class ModelClient:
         self._server_metadata = meta
         self.include_state = meta.get("include_state", False) not in ["False", False]
         self.obs_image_size = meta.get("obs_image_size", [224, 224])
+        self.image_flip = meta.get("image_flip", None)
 
         self.policy_setup = policy_setup
         self.unnorm_key = unnorm_key
@@ -52,7 +53,7 @@ class ModelClient:
             f"*** policy_setup: {policy_setup}, unnorm_key: {unnorm_key}, "
             f"action_chunk_size: {self.action_chunk_size}, "
             f"include_state: {self.include_state}, obs_image_size: {self.obs_image_size}, "
-            f"server_meta: {meta} ***"
+            f"image_flip: {self.image_flip}, server_meta: {meta} ***"
         )
 
         self.use_ddim = use_ddim

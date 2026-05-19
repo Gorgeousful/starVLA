@@ -55,6 +55,7 @@ datasets:
     per_device_batch_size: 16
     load_all_data_for_training: true # 无效
     video_backend: torchvision_av
+    image_flip: horizontal
     include_state: true
     custom_annotation: # need to be consistent with CoT_prompt
       enabled: true
