@@ -112,7 +112,15 @@ class _QWen3_VL_Interface(nn.Module):
             )
         return generation_output
 
-    def build_qwenvl_inputs(self, images, instructions, solutions=None, solution_label_mask="action_tokens", **kwargs):
+    def build_qwenvl_inputs(
+        self,
+        images,
+        instructions,
+        solutions=None,
+        solution_label_mask="action_tokens",
+        state_strings=None,
+        **kwargs,
+    ):
         """
         Build model inputs from raw data (images + instructions + optional solutions).
         Follow Oficial Qwen3-VL Instruct format: https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct
@@ -121,12 +129,15 @@ class _QWen3_VL_Interface(nn.Module):
         # Create messages: one message per sample
         messages = []
         assert len(images) == len(instructions), "Images and instructions must have the same length"
-        for imgs, instruction in zip(images, instructions):
+        if state_strings is not None:
+            assert len(state_strings) == len(instructions), "State strings and instructions must have the same length"
+        for sample_idx, (imgs, instruction) in enumerate(zip(images, instructions)):
             content = [{"type": "image", "image": img} for img in imgs]
+            state_string = "" if state_strings is None else state_strings[sample_idx]
 
             if "CoT_prompt" in self.config.datasets.vla_data:  # If using a grounding prompt to task
                 CoT_prompt = self.config.datasets.vla_data.get("CoT_prompt", "")
-                prompt = CoT_prompt.replace("{instruction}", instruction)
+                prompt = CoT_prompt.replace("{instruction}", instruction).replace("{state}", state_string)
             else:
                 prompt = instruction
 
@@ -149,26 +160,28 @@ class _QWen3_VL_Interface(nn.Module):
             action_token_min = _ACTION_TOKEN_MIN  # how can we know this range? --> we has other way for this, but is slower see qwenhelix branch
             action_token_max = _ACTION_TOKEN_MAX  # here only for fast_tokenizer, see starVLA/model/modules/vlm/tools/add_qwen_special_tokens/README.md
             labels = batch_inputs["input_ids"].clone()
+            # Flow matching should be conditioned like inference: prompt tokens only.
+            # Keep Qwen's padding mask, then additionally hide teacher-forced solution tokens.
+            flow_encoder_attention_mask = batch_inputs["attention_mask"].to(torch.bool).unsqueeze(1)
+            solution_spans: list[tuple[int, int]] = []
+            for i, solution in enumerate(solutions):
+                solution_ids = self.processor.tokenizer(
+                    solution,
+                    add_special_tokens=False,
+                )["input_ids"]
+                start = self._find_token_subsequence(labels[i], solution_ids)
+                if start is None:
+                    raise ValueError(
+                        "Could not find assistant solution token span; cannot build leakage-free flow mask. "
+                        f"sample_index={i}, solution_prefix={solution[:120]!r}"
+                    )
+                end = start + len(solution_ids)
+                solution_spans.append((start, end))
+                flow_encoder_attention_mask[i, :, start:] = False
+
             if solution_label_mask == "output_tokens":
                 masked_labels = torch.full_like(labels, IGNORE_INDEX)
-                for i, solution in enumerate(solutions):
-                    solution_ids = self.processor.tokenizer(
-                        solution,
-                        add_special_tokens=False,
-                    )["input_ids"]
-                    start = self._find_token_subsequence(labels[i], solution_ids)
-                    if start is None:
-                        logger.warning(
-                            "Could not find assistant solution token span; falling back to action-token labels."
-                        )
-                        self._mask_action_token_labels(
-                            masked_labels[i],
-                            labels[i],
-                            action_token_min,
-                            action_token_max,
-                        )
-                        continue
-                    end = start + len(solution_ids)
+                for i, (start, end) in enumerate(solution_spans):
                     masked_labels[i, start:end] = labels[i, start:end]
                 labels = masked_labels
             elif solution_label_mask == "action_tokens":
@@ -184,6 +197,7 @@ class _QWen3_VL_Interface(nn.Module):
 
             labels[labels == self.processor.tokenizer.pad_token_id] = -100  ## mask out pad tokens as well
             batch_inputs["labels"] = labels
+            batch_inputs["flow_encoder_attention_mask"] = flow_encoder_attention_mask
 
         return batch_inputs.to(self.model.device)
 

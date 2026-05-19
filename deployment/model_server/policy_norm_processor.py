@@ -351,6 +351,54 @@ class PolicyNormProcessor:
         return self._transform
 
     # ------------------------------------------------------------------
+    # Forward path (env state → model state)
+    # ------------------------------------------------------------------
+    def apply_state(self, raw_state: np.ndarray) -> np.ndarray:
+        """Apply training-time state normalization.
+
+        Args:
+            raw_state: shape ``(T, D_state)`` where
+                ``D_state == sum(state_key_dims.values())``.
+
+        Returns:
+            ``(T, D_state)`` normalized state in the model training space.
+        """
+        raw_state = np.asarray(raw_state)
+        squeeze = raw_state.ndim == 1
+        if squeeze:
+            raw_state = raw_state[None, :]
+        assert raw_state.ndim == 2, f"Expected (T, D_state); got shape {raw_state.shape}"
+        if not self._state_keys:
+            raise ValueError("No state_keys are available for this checkpoint/data config.")
+
+        data: Dict[str, np.ndarray] = {}
+        cursor = 0
+        for full_key in self._state_keys:
+            dim_k = self._state_key_dims.get(full_key, 1)
+            slice_ = raw_state[..., cursor : cursor + dim_k]
+            data[full_key] = np.asarray(slice_, dtype=np.float32)
+            cursor += dim_k
+
+        if cursor != raw_state.shape[-1]:
+            raise ValueError(
+                f"Sum of per-key dims ({cursor}) != state_dim "
+                f"({raw_state.shape[-1]}). "
+                f"state_keys={self._state_keys}, "
+                f"state_key_dims={self._state_key_dims}"
+            )
+
+        out = self._transform.apply(data)
+
+        parts: List[np.ndarray] = []
+        for full_key in self._state_keys:
+            v = out[full_key]
+            if isinstance(v, torch.Tensor):
+                v = v.detach().cpu().numpy()
+            parts.append(np.asarray(v))
+        normalized_state = np.concatenate(parts, axis=-1)
+        return normalized_state[0] if squeeze else normalized_state
+
+    # ------------------------------------------------------------------
     # Inverse path (model output → env action)
     # ------------------------------------------------------------------
     def unapply_actions(self, normalized_actions: np.ndarray) -> np.ndarray:

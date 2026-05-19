@@ -21,11 +21,10 @@ Key improvements over QwenPI
    action head parameter count by ~(vl_hidden / dit_hidden)² while keeping
    the full layer-wise cross-attention structure.
 
-2. **Discretised-state language injection** (`add_discretized_state_to_instruction`)
-   Proprioceptive state is quantised into 256 bins and appended to the
-   language instruction as plain tokens (``[STATE] <bins>``),
-   following the π₀.5 design.  This lets the VLM attend to state without
-   any extra encoder module.
+2. **Structured discretised-state prompt injection**
+   Proprioceptive state is quantised into 256 bins and supplied through the
+   configured ``{state}`` prompt placeholder, following the π₀.5 design.
+   This lets the VLM attend to state without any extra encoder module.
 
 Together these two features bring QwenPI_v3 close to all the core
 capabilities of π₀.5 within a single open-weight VLM framework.
@@ -244,12 +243,18 @@ class Qwen_PI_v3(baseframework):
         return [proj(vl_h) for proj, vl_h in zip(self.project_layers, vl_embs_list)]
 
     def _encode_vl_hidden_states(
-        self, batch_images: List, instructions: List[str]
-    ) -> List[torch.Tensor]:
-        """Run QwenVL, project hidden states, and return the layer-wise embeddings for the Action DiT."""
+        self,
+        batch_images: List,
+        instructions: List[str],
+        state_strings: Optional[List[str]] = None,
+    ) -> Tuple[List[torch.Tensor], torch.Tensor]:
+        """Run QwenVL and return layer-wise embeddings plus the non-padding token mask."""
         qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(
-            images=batch_images, instructions=instructions
+            images=batch_images,
+            instructions=instructions,
+            state_strings=state_strings,
         )
+        encoder_attention_mask = qwen_inputs["attention_mask"].to(torch.bool).unsqueeze(1)
         with torch.autocast("cuda", dtype=torch.bfloat16):
             qwenvl_outputs = self.qwen_vl_interface(
                 **qwen_inputs,
@@ -259,7 +264,7 @@ class Qwen_PI_v3(baseframework):
             )
             vl_embs_list = list(qwenvl_outputs.hidden_states[-self.num_action_dit_layers:])
             vl_embs_list = self._project_vl_hidden_for_action(vl_embs_list)
-        return vl_embs_list
+        return vl_embs_list, encoder_attention_mask
 
     def forward(
         self,
@@ -283,14 +288,20 @@ class Qwen_PI_v3(baseframework):
             [example["state"] for example in examples] if "state" in examples[0] else None
         )  # List[ndarray (1, state_dim)] or None
 
-        # Prepend discretised proprioceptive state to each instruction string.
-        instructions = (
-            self.add_discretized_state_to_instruction(instructions, state) if state is not None else instructions
+        # Encode discretised proprioceptive state through the structured {state} prompt field.
+        instructions, state_strings = (
+            self._prepare_instructions_and_state_strings(instructions, state)
+            if state is not None
+            else (instructions, None)
         )
-        state = None  # state is now encoded in the instruction tokens
+        state = None  # state is now encoded in the structured state prompt field
 
         # Step 1: encode through QwenVL
-        vl_embs_list = self._encode_vl_hidden_states(batch_images, instructions)
+        vl_embs_list, encoder_attention_mask = self._encode_vl_hidden_states(
+            batch_images,
+            instructions,
+            state_strings=state_strings,
+        )
         base_hidden = vl_embs_list[-1]
 
         # Step 2: compute flow-matching loss over the action chunk
@@ -306,8 +317,9 @@ class Qwen_PI_v3(baseframework):
             )
             repeated_diffusion_steps = 2  # No repeat for the large action FM to save memory.
             actions_target_repeated = actions_target.repeat(repeated_diffusion_steps, 1, 1)
-            # Repeat every VLM layer embedding to match the duplicated action batch.
+            # Repeat every VLM layer embedding and mask to match the duplicated action batch.
             vl_embs_list_repeated = [h.repeat(repeated_diffusion_steps, 1, 1) for h in vl_embs_list]
+            encoder_attention_mask_repeated = encoder_attention_mask.repeat(repeated_diffusion_steps, 1, 1)
 
             state_repeated = None
             if state is not None:
@@ -318,6 +330,7 @@ class Qwen_PI_v3(baseframework):
                 vl_embs_list_repeated,
                 actions_target_repeated,
                 state_repeated,
+                encoder_attention_mask=encoder_attention_mask_repeated,
             )
 
         return {"action_loss": action_loss}
@@ -353,9 +366,11 @@ class Qwen_PI_v3(baseframework):
         instructions = [example["lang"] for example in examples]  # List[str]
         state = [example["state"] for example in examples] if "state" in examples[0] else None  # List[ndarray] or None
 
-        # Encode proprioceptive state into the instruction string, then discard raw state.
-        instructions = (
-            self.add_discretized_state_to_instruction(instructions, state) if state is not None else instructions
+        # Encode proprioceptive state through the configured prompt, then discard raw state.
+        instructions, state_strings = (
+            self._prepare_instructions_and_state_strings(instructions, state)
+            if state is not None
+            else (instructions, None)
         )
         state = None
 
@@ -365,7 +380,11 @@ class Qwen_PI_v3(baseframework):
             batch_images = resize_images(batch_images, target_size=train_obs_image_size)
 
         # Step 1: encode through QwenVL
-        vl_embs_list = self._encode_vl_hidden_states(batch_images, instructions)
+        vl_embs_list, encoder_attention_mask = self._encode_vl_hidden_states(
+            batch_images,
+            instructions,
+            state_strings=state_strings,
+        )
         base_hidden = vl_embs_list[-1]
 
         state = (
@@ -376,38 +395,51 @@ class Qwen_PI_v3(baseframework):
         # Step 2: run the flow-matching sampler to produce the denoised action chunk.
         with torch.autocast("cuda", dtype=torch.float32):
             pred_actions = self.action_model.predict_action(
-                vl_embs_list, state
+                vl_embs_list,
+                state,
+                encoder_attention_mask=encoder_attention_mask,
             )  # (B, action_horizon, action_dim)
 
         normalized_actions = pred_actions.detach().cpu().numpy()
         return {"normalized_actions": normalized_actions}
 
     def state2str_transform(self, state: np.ndarray) -> str:
-        """Quantise a state vector into 256 uniform bins and return it as a space-separated token string.
+        """Format normalized proprioceptive state for prompt injection.
 
-        Follows the π₀.5 convention: bins span [-1, 1] uniformly.
-        Example: [-0.5, 0.1, 0.8] -> "95 133 203"
+        State is normalized by the training-time state transform, then clipped
+        to [-1, 1] before tokenization into 256 bins.
         """
+        state = np.clip(np.asarray(state), -1.0, 1.0)
         discretized_state = np.digitize(state, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
-        return " ".join(map(str, discretized_state))
+        discretized_state = np.clip(discretized_state, 0, 255)
+        return " ".join(map(str, discretized_state.astype(int)))
 
-    def add_discretized_state_to_instruction(self, instructions: List[str], states: List[np.ndarray]) -> List[str]:
-        """Append discretised proprioceptive state tokens to each instruction.
+    def _cot_prompt_uses_state_placeholder(self) -> bool:
+        cot_prompt = getattr(self.config.datasets.vla_data, "CoT_prompt", "")
+        return "{state}" in str(cot_prompt)
 
-        Format: ``<original instruction> [STATE] <bin indices>``
-        This lets the VLM attend to the robot state purely through its
-        existing text-token pathway — no extra encoder required.
-        """
-        updated_instructions = []
-        for instr, state in zip(instructions, states):
+    def discretized_state_strings(self, states: List[np.ndarray]) -> List[str]:
+        """Format state history as prompt-ready strings, one per instruction."""
+        state_strings = []
+        for state in states:
             state_array = np.asarray(state)
             if state_array.ndim == 1:
                 state_array = state_array[None]
-            state_str = " ".join(self.state2str_transform(step_state) for step_state in state_array)
-            updated_instructions.append(f"{instr} [STATE] {state_str}")
-            # Previous QwenPI_v3 format kept here for quick comparison / rollback:
-            # updated_instructions.append(f"{instr} [STATE] {state_str} [ACTION]")
-        return updated_instructions
+            state_strings.append(" ".join(self.state2str_transform(step_state) for step_state in state_array))
+        return state_strings
+
+    def _prepare_instructions_and_state_strings(
+        self,
+        instructions: List[str],
+        states: List[np.ndarray],
+    ) -> Tuple[List[str], List[str]]:
+        """Use only the structured {state} prompt path."""
+        if not self._cot_prompt_uses_state_placeholder():
+            raise ValueError(
+                "QwenPI_v3 requires datasets.vla_data.CoT_prompt to contain {state} "
+                "when examples include proprioceptive state."
+            )
+        return instructions, self.discretized_state_strings(states)
 
 
 if __name__ == "__main__":

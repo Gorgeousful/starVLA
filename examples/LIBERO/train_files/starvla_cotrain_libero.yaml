@@ -16,8 +16,7 @@ framework:
   #   flow_loss_weight: 1.0
   #   fast_loss_weight: 1.0
   #   detach_vlm_for_flow: true
-  #   keep_gripper_state: true
-  #   gripper_open_max: 0.04
+  #   gripper_state_only: true
   # delta_mem:
   #   enabled: true
   #   adapter_layers: null
@@ -52,8 +51,8 @@ datasets:
     data_mix: libero_all
     action_type: delta_qpos
     sequential_step_sampling: False
-    # CoT_prompt: "Given: {instruction}\nPredict: [SUBTASK] [PHASE] [GROUNDING] [ACTION]" # Predict: [ACTION]
-    CoT_prompt: "Given: {instruction}\nPredict: [ACTION]"
+    # CoT_prompt: "Given: {instruction}\nPredict: [ACTION]"
+    CoT_prompt: "Given:\n[TASK] {instruction}\n[STATE] {state}\n\nPredict:\n[ACTION]"
     per_device_batch_size: 16
     load_all_data_for_training: true
     video_backend: torchvision_av

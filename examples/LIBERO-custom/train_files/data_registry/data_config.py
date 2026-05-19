@@ -50,16 +50,21 @@ class Libero4in1DataConfig:
 
     def transform(self):
         return ComposedModalityTransform(transforms=[
+            StateActionToTensor(apply_to=self.state_keys),
+            StateActionTransform(
+                apply_to=self.state_keys,
+                normalization_modes={key: "q99" for key in self.state_keys},
+            ),
             StateActionToTensor(apply_to=self.action_keys),
             StateActionTransform(
                 apply_to=self.action_keys,
                 normalization_modes={
-                    "action.x": "min_max",
-                    "action.y": "min_max",
-                    "action.z": "min_max",
-                    "action.roll": "min_max",
-                    "action.pitch": "min_max",
-                    "action.yaw": "min_max",
+                    "action.x": "q99",
+                    "action.y": "q99",
+                    "action.z": "q99",
+                    "action.roll": "q99",
+                    "action.pitch": "q99",
+                    "action.yaw": "q99",
                 },
             ),
         ])

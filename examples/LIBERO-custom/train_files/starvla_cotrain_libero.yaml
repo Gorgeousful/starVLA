@@ -16,11 +16,10 @@ framework:
     flow_loss_weight: 1.0
     fast_loss_weight: 1.0
     detach_vlm_for_flow: true
-    keep_gripper_state: true
-    gripper_open_max: 0.04
+    gripper_state_only: false
   delta_mem:
     enabled: true
-    adapter_layers: null
+    adapter_layers: [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
     rank: 8
     alpha: 16.0
     delta_heads: ["q", "o"]
@@ -52,12 +51,12 @@ datasets:
     data_mix: libero_all_custom
     action_type: delta_qpos # 没有发挥作用，实际是action_mode发挥作用
     sequential_step_sampling: False
-    CoT_prompt: "Given: {instruction}\nPredict: [SUBTASK] [PHASE] [GROUNDING] [ACTION]" # Predict: [ACTION]
+    CoT_prompt: "Given:\n[TASK] {instruction}\n[STATE] {state}\n\nPredict:\n[SUBTASK]\n[PHASE]\n[GROUNDING]\n[ACTION]"
     per_device_batch_size: 16
     load_all_data_for_training: true # 无效
     video_backend: torchvision_av
     include_state: true
-    custom_annotation:
+    custom_annotation: # need to be consistent with CoT_prompt
       enabled: true
       include_gripper: true
       delta_indices: [0] # [8] [0,8]

@@ -21,11 +21,11 @@ Key improvements over QwenPI
    action head parameter count by ~(vl_hidden / dit_hidden)² while keeping
    the full layer-wise cross-attention structure.
 
-2. **Discretised-state language injection** (`add_discretized_state_to_instruction`)
-   Proprioceptive state is quantised into 256 bins and appended to the
-   language instruction as plain tokens (``[STATE] <bins> [ACTION]``),
-   following the π₀.5 design.  This lets the VLM attend to state without
-   any extra encoder module.
+2. **Structured discretised-state prompt injection**
+   Proprioceptive state is normalized by the training-time transform, quantised
+   into 256 bins, and supplied through the configured ``{state}`` prompt
+   placeholder. This lets the VLM attend to state without any extra encoder
+   module.
 
 Together these two features bring QwenKI close to all the core
 capabilities of π₀.5 within a single open-weight VLM framework.
@@ -108,8 +108,7 @@ class QwenKIDefaultConfig:
             "flow_loss_weight": 1.0,
             "fast_loss_weight": 1.0,
             "detach_vlm_for_flow": True,
-            "keep_gripper_state": False,
-            "gripper_open_max": 1.0,
+            "gripper_state_only": False,
         }
     )
 
@@ -288,10 +287,7 @@ class Qwen_KI(baseframework):
         self.ki_flow_loss_weight = float(ki_cfg.get("flow_loss_weight", 1.0))
         self.ki_fast_loss_weight = float(ki_cfg.get("fast_loss_weight", 1.0))
         self.ki_detach_vlm_for_flow = ki_cfg.get("detach_vlm_for_flow", True) not in ["False", False]
-        self.keep_gripper_state = ki_cfg.get("keep_gripper_state", False) not in ["False", False]
-        self.gripper_open_max = float(ki_cfg.get("gripper_open_max", 1.0))
-        if self.gripper_open_max <= 0:
-            raise ValueError("framework.ki.gripper_open_max must be positive.")
+        self.gripper_state_only = ki_cfg.get("gripper_state_only", False) not in ["False", False]
         custom_annotation_cfg = getattr(self.config.datasets.vla_data, "custom_annotation", {})
         self.ki_supervise_annotations = custom_annotation_cfg.get("enabled", False) not in ["False", False]
 
@@ -375,14 +371,16 @@ class Qwen_KI(baseframework):
         set_delta_mem_write_enabled(self.qwen_vl_interface.model, True)
         for step_index, history_images in enumerate(history_images_by_step):
             step_instructions = instructions
+            step_state_strings = None
             if history_states_by_step is not None:
-                step_instructions = self.add_discretized_state_to_instruction(
+                step_instructions, step_state_strings = self._prepare_instructions_and_state_strings(
                     instructions,
                     history_states_by_step[step_index],
                 )
             qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(
                 images=history_images,
                 instructions=step_instructions,
+                state_strings=step_state_strings,
             )
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 self.qwen_vl_interface(
@@ -394,11 +392,11 @@ class Qwen_KI(baseframework):
         set_delta_mem_write_enabled(self.qwen_vl_interface.model, False)
 
     def _encode_vl_hidden_states(
-        self, batch_images: List, instructions: List[str]
+        self, batch_images: List, instructions: List[str], state_strings: List[str] | None = None
     ) -> List[torch.Tensor]:
         """Run QwenVL, project hidden states, and return the layer-wise embeddings for the Action DiT."""
         qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(
-            images=batch_images, instructions=instructions
+            images=batch_images, instructions=instructions, state_strings=state_strings
         )
         with torch.autocast("cuda", dtype=torch.bfloat16):
             qwenvl_outputs = self.qwen_vl_interface(
@@ -449,17 +447,19 @@ class Qwen_KI(baseframework):
                 base_instructions,
                 history_states_by_step,
             )
-            instructions = (
-                self.add_discretized_state_to_instruction(base_instructions, current_state)
+            instructions, state_strings = (
+                self._prepare_instructions_and_state_strings(base_instructions, current_state)
                 if current_state is not None
-                else base_instructions
+                else (base_instructions, None)
             )
         else:
-            # Prepend discretised proprioceptive state to each instruction string.
-            instructions = (
-                self.add_discretized_state_to_instruction(instructions, state) if state is not None else instructions
+            # Encode discretised proprioceptive state either through {state} or the legacy instruction suffix.
+            instructions, state_strings = (
+                self._prepare_instructions_and_state_strings(instructions, state)
+                if state is not None
+                else (instructions, None)
             )
-        state = None  # state is now encoded in the instruction tokens
+        state = None  # state is now encoded in the instruction tokens or structured state prompt field
 
         # Step 1: train the VLM with FAST action tokens and reuse its hidden states.
         qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(
@@ -467,7 +467,9 @@ class Qwen_KI(baseframework):
             instructions=instructions,
             solutions=vlm_action_tokens,
             solution_label_mask="output_tokens" if self.ki_supervise_annotations else "action_tokens",
+            state_strings=state_strings,
         )
+        flow_encoder_attention_mask = qwen_inputs.pop("flow_encoder_attention_mask", None)
         with torch.autocast("cuda", dtype=torch.bfloat16):
             qwenvl_outputs = self.qwen_vl_interface(
                 **qwen_inputs,
@@ -504,6 +506,11 @@ class Qwen_KI(baseframework):
             actions_target_repeated = actions_target.repeat(repeated_diffusion_steps, 1, 1)
             # Repeat every VLM layer embedding to match the duplicated action batch.
             vl_embs_list_repeated = [h.repeat(repeated_diffusion_steps, 1, 1) for h in vl_embs_for_flow]
+            flow_encoder_attention_mask_repeated = (
+                flow_encoder_attention_mask.repeat(repeated_diffusion_steps, 1, 1)
+                if flow_encoder_attention_mask is not None
+                else None
+            )
 
             state_repeated = None
             if state is not None:
@@ -514,6 +521,7 @@ class Qwen_KI(baseframework):
                 vl_embs_list_repeated,
                 actions_target_repeated,
                 state_repeated,
+                encoder_attention_mask=flow_encoder_attention_mask_repeated,
             )
 
         total_loss = (
@@ -558,11 +566,7 @@ class Qwen_KI(baseframework):
         instructions = [example["lang"] for example in examples]  # List[str]
         state = [example["state"] for example in examples] if "state" in examples[0] else None  # List[ndarray] or None
 
-        # Encode proprioceptive state into the instruction string, then discard raw state.
-        instructions = (
-            self.add_discretized_state_to_instruction(instructions, state) if state is not None else instructions
-        )
-        state = None
+        state_strings = None
 
         # Optionally resize images to the resolution used during training.
         train_obs_image_size = getattr(self.config.datasets.vla_data, "obs_image_size", None)
@@ -586,17 +590,29 @@ class Qwen_KI(baseframework):
                     base_instructions,
                     history_states_by_step,
                 )
-                instructions = (
-                    self.add_discretized_state_to_instruction(base_instructions, current_state)
+                instructions, state_strings = (
+                    self._prepare_instructions_and_state_strings(base_instructions, current_state)
                     if current_state is not None
-                    else base_instructions
+                    else (base_instructions, None)
                 )
             else:
                 reset_delta_mem_states(self.qwen_vl_interface.model)
                 set_delta_mem_write_enabled(self.qwen_vl_interface.model, False)
+                instructions, state_strings = (
+                    self._prepare_instructions_and_state_strings(instructions, state)
+                    if state is not None
+                    else (instructions, None)
+                )
+        else:
+            instructions, state_strings = (
+                self._prepare_instructions_and_state_strings(instructions, state)
+                if state is not None
+                else (instructions, None)
+            )
+        state = None
 
         # Step 1: encode through QwenVL
-        vl_embs_list = self._encode_vl_hidden_states(batch_images, instructions)
+        vl_embs_list = self._encode_vl_hidden_states(batch_images, instructions, state_strings=state_strings)
         base_hidden = vl_embs_list[-1]
 
         state = (
@@ -607,7 +623,8 @@ class Qwen_KI(baseframework):
         # Step 2: run the flow-matching sampler to produce the denoised action chunk.
         with torch.autocast("cuda", dtype=torch.float32):
             pred_actions = self.action_model.predict_action(
-                vl_embs_list, state
+                vl_embs_list,
+                state,
             )  # (B, action_horizon, action_dim)
 
         normalized_actions = pred_actions.detach().cpu().numpy()
@@ -616,42 +633,44 @@ class Qwen_KI(baseframework):
     def state2str_transform(self, state: np.ndarray) -> str:
         """Format proprioceptive state for prompt injection.
 
-        The default follows the π₀.5 convention: quantise the full state into
-        256 bins over [-1, 1]. When ``keep_gripper_state`` is enabled, keep
-        only the last gripper dimension, normalise absolute opening into
-        [0, 1], then quantise that scalar into a 256-bin token.
+        The input state is expected to be normalized by the training-time
+        state transform, then clipped to [-1, 1] for tokenization. When
+        ``gripper_state_only`` is enabled, only the final gripper dimension is
+        emitted, after the full state has already been normalized.
         """
-        state = np.asarray(state)
-        if self.keep_gripper_state:
-            gripper = float(state[-1])
-            normalized_gripper = np.clip(abs(gripper) / self.gripper_open_max, 0.0, 1.0)
-            discretized_gripper = np.digitize(
-                normalized_gripper,
-                bins=np.linspace(0, 1, 256 + 1)[:-1],
-            ) - 1
-            return str(int(discretized_gripper))
+        state = np.clip(np.asarray(state), -1.0, 1.0)
+        if self.gripper_state_only:
+            state = state[-1:]
         discretized_state = np.digitize(state, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
-        return " ".join(map(str, discretized_state))
+        discretized_state = np.clip(discretized_state, 0, 255)
+        return " ".join(map(str, discretized_state.astype(int)))
 
-    def add_discretized_state_to_instruction(
-        self,
-        instructions: List[str],
-        states: List[np.ndarray],
-    ) -> List[str]:
-        """Append discretised proprioceptive state tokens to each instruction.
+    def _cot_prompt_uses_state_placeholder(self) -> bool:
+        cot_prompt = getattr(self.config.datasets.vla_data, "CoT_prompt", "")
+        return "{state}" in str(cot_prompt)
 
-        Format: ``<original instruction> [STATE] <bin indices>``.
-        This lets the VLM attend to the robot state purely through its
-        existing text-token pathway — no extra encoder required.
-        """
-        updated_instructions = []
-        for instr, state in zip(instructions, states):
+    def discretized_state_strings(self, states: List[np.ndarray]) -> List[str]:
+        """Format state history as prompt-ready strings, one per instruction."""
+        state_strings = []
+        for state in states:
             state_array = np.asarray(state)
             if state_array.ndim == 1:
                 state_array = state_array[None]
-            state_str = " ".join(self.state2str_transform(step_state) for step_state in state_array)
-            updated_instructions.append(f"{instr} [STATE] {state_str}")
-        return updated_instructions
+            state_strings.append(" ".join(self.state2str_transform(step_state) for step_state in state_array))
+        return state_strings
+
+    def _prepare_instructions_and_state_strings(
+        self,
+        instructions: List[str],
+        states: List[np.ndarray],
+    ) -> tuple[List[str], List[str]]:
+        """Use only the structured {state} prompt path."""
+        if not self._cot_prompt_uses_state_placeholder():
+            raise ValueError(
+                "QwenKI requires datasets.vla_data.CoT_prompt to contain {state} "
+                "when examples include proprioceptive state."
+            )
+        return instructions, self.discretized_state_strings(states)
 
     def map_fast_token_to_vlm_action(self, tokens) -> str:
         """Map FAST tokenizer ids to Qwen action special-token strings."""

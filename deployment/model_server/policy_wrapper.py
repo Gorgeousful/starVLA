@@ -155,7 +155,14 @@ class PolicyServerWrapper:
                 )
         proc = self._get_processor(effective_key)
 
-        out = self._framework.predict_action(examples=examples, **kwargs)
+        model_examples = []
+        for example in examples:
+            model_example = dict(example)
+            if "state" in model_example and model_example["state"] is not None:
+                model_example["state"] = proc.apply_state(model_example["state"])
+            model_examples.append(model_example)
+
+        out = self._framework.predict_action(examples=model_examples, **kwargs)
         normalized = np.asarray(out["normalized_actions"])  # (B, T, D)
 
         unnorm = np.stack(
