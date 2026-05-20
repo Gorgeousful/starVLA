@@ -25,6 +25,7 @@ wandb_project=starvla_libero
 per_device_batch_size=4
 gradient_accumulation_steps=8
 is_debug=False
+save_ckpt_only=False
 deepspeed_config_yaml=./starVLA/config/deepseeds/deepspeed_zero2.yaml
 # === End of environment variable configuration ===
 ###########################################################################################
@@ -50,4 +51,5 @@ accelerate launch \
   --run_id ${run_id} \
   --wandb_project ${wandb_project} \
   --wandb_entity ${wandb_entity} \
-  --is_debug ${is_debug}
+  --is_debug ${is_debug} \
+  --trainer.save_ckpt_only ${save_ckpt_only}

@@ -122,6 +122,7 @@ class VLATrainer(TrainerUtils):
         self.accelerator = accelerator
 
         self.completed_steps = 0
+        self.pending_training_state = None
         self.total_batch_size = self._calculate_total_batch_size()
 
     def prepare_training(self):
@@ -135,7 +136,6 @@ class VLATrainer(TrainerUtils):
         self._save_initial_configs()
 
         self._init_checkpointing()
-        self._adjust_lr_scheduler_for_resume()
 
         freeze_modules = (
             self.config.trainer.freeze_modules
@@ -145,12 +145,18 @@ class VLATrainer(TrainerUtils):
         self.model = self.freeze_backbones(self.model, freeze_modules=freeze_modules)
         self.print_trainable_parameters(self.model)
 
-        self.model, self.optimizer, self.vla_train_dataloader = self.setup_distributed_training(
+        self.model, self.optimizer, self.vla_train_dataloader, self.lr_scheduler = self.setup_distributed_training(
             self.accelerator,
             self.model,
             self.optimizer,
             self.vla_train_dataloader,
+            self.lr_scheduler,
         )
+
+        if self.pending_training_state:
+            self._load_checkpoint(self.pending_training_state)
+        else:
+            self._adjust_lr_scheduler_for_resume()
 
         self._init_wandb()
 
@@ -201,9 +207,24 @@ class VLATrainer(TrainerUtils):
 
         pretrained_checkpoint = getattr(self.config.trainer, "pretrained_checkpoint", None)
         is_resume = getattr(self.config.trainer, "is_resume", False)
+        save_ckpt_only = getattr(self.config.trainer, "save_ckpt_only", True)
         self.resume_from_checkpoint = pretrained_checkpoint
 
         if is_resume:
+            if not save_ckpt_only:
+                resume_from_state, self.completed_steps = self._get_latest_training_state(self.checkpoint_dir)
+                if resume_from_state:
+                    self.resume_from_checkpoint = resume_from_state
+                    self.pending_training_state = resume_from_state
+                    logger.info(
+                        f"Resuming full training state from checkpoint: {resume_from_state}, steps: {self.completed_steps}"
+                    )
+                    return
+
+                logger.warning(
+                    f"No valid training state found in {self.checkpoint_dir}. Falling back to model-only resume."
+                )
+
             resume_from_checkpoint, self.completed_steps = self._get_latest_checkpoint(self.checkpoint_dir)
             if resume_from_checkpoint:
                 self.resume_from_checkpoint = resume_from_checkpoint
@@ -243,10 +264,11 @@ class VLATrainer(TrainerUtils):
 
     def _save_checkpoint(self):
         """Save current training state."""
-        if self.accelerator.is_main_process:
-            save_format = getattr(self.config.trainer, "save_format", "pt")
-            checkpoint_path = os.path.join(self.checkpoint_dir, f"steps_{self.completed_steps}")
+        save_format = getattr(self.config.trainer, "save_format", "pt")
+        save_ckpt_only = getattr(self.config.trainer, "save_ckpt_only", True)
+        checkpoint_path = os.path.join(self.checkpoint_dir, f"steps_{self.completed_steps}")
 
+        if self.accelerator.is_main_process:
             state_dict = self.accelerator.get_state_dict(self.model)
             if save_format == "safetensors":
                 from safetensors.torch import save_file
@@ -267,6 +289,13 @@ class VLATrainer(TrainerUtils):
                 output_dir = Path(self.config.output_dir)
                 self.config.save_accessed_config(output_dir / "config.yaml", use_original_values=False)
                 logger.info("✅ Configuration files saved")
+
+        self.accelerator.wait_for_everyone()
+
+        if not save_ckpt_only:
+            state_path = checkpoint_path + "_training_state"
+            self.accelerator.save_state(output_dir=state_path)
+            self.accelerator.print(f"✅ Training state saved at {state_path}")
 
         self.accelerator.wait_for_everyone()
 

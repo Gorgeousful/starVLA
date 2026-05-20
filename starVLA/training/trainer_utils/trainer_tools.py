@@ -536,6 +536,37 @@ class TrainerUtils:
         self.accelerator.print(f"Latest checkpoint found: {latest_checkpoint_path}")
         return latest_checkpoint_path, completed_steps
 
+    def _get_latest_training_state(self, checkpoint_dir):
+        """Find the latest Accelerate training-state directory based on step number."""
+        if not os.path.exists(checkpoint_dir):
+            self.accelerator.print(f"No checkpoint directory found at {checkpoint_dir}")
+            return None, 0
+
+        states = [
+            f for f in os.listdir(checkpoint_dir)
+            if re.match(r"steps_(\d+)_training_state$", f)
+            and os.path.isdir(os.path.join(checkpoint_dir, f))
+        ]
+
+        if not states:
+            self.accelerator.print(f"No training states found in {checkpoint_dir}")
+            return None, 0
+
+        try:
+            states_with_steps = [
+                (state, int(re.search(r"steps_(\d+)_training_state$", state).group(1)))
+                for state in states
+            ]
+        except AttributeError as e:
+            self.accelerator.print(f"Error parsing training-state names: {e}")
+            return None, 0
+
+        states_with_steps.sort(key=lambda x: x[1])
+        latest_state, completed_steps = states_with_steps[-1]
+        latest_state_path = os.path.join(checkpoint_dir, latest_state)
+        self.accelerator.print(f"Latest training state found: {latest_state_path}")
+        return latest_state_path, completed_steps
+
 import os
 
 
