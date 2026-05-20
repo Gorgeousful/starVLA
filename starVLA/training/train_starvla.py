@@ -211,19 +211,21 @@ class VLATrainer(TrainerUtils):
         self.resume_from_checkpoint = pretrained_checkpoint
 
         if is_resume:
-            if not save_ckpt_only:
-                resume_from_state, self.completed_steps = self._get_latest_training_state(self.checkpoint_dir)
-                if resume_from_state:
-                    self.resume_from_checkpoint = resume_from_state
-                    self.pending_training_state = resume_from_state
-                    logger.info(
-                        f"Resuming full training state from checkpoint: {resume_from_state}, steps: {self.completed_steps}"
-                    )
-                    return
-
-                logger.warning(
-                    f"No valid training state found in {self.checkpoint_dir}. Falling back to model-only resume."
+            resume_from_state, self.completed_steps = self._get_latest_training_state(self.checkpoint_dir)
+            if resume_from_state:
+                self.resume_from_checkpoint = resume_from_state
+                self.pending_training_state = resume_from_state
+                logger.info(
+                    f"Resuming full training state from checkpoint: {resume_from_state}, steps: {self.completed_steps}"
                 )
+                return
+
+            if not save_ckpt_only:
+                logger.warning(
+                    f"No valid training state found in {self.checkpoint_dir}. Nothing will be loaded for resume."
+                )
+                self.completed_steps = 0
+                return
 
             resume_from_checkpoint, self.completed_steps = self._get_latest_checkpoint(self.checkpoint_dir)
             if resume_from_checkpoint:
@@ -262,13 +264,73 @@ class VLATrainer(TrainerUtils):
         self.accelerator.load_state(checkpoint_path)
         self.accelerator.print(f"Resumed from checkpoint: {checkpoint_path}")
 
+    def _find_state_model_weight(self, state_path):
+        """Find the model-weight file produced inside an Accelerate state directory."""
+        preferred_names = (
+            "model.safetensors",
+            "pytorch_model.bin",
+            "pytorch_model.pt",
+            "pytorch_model_0.bin",
+            "pytorch_model_0.pt",
+        )
+        for name in preferred_names:
+            candidate = os.path.join(state_path, name)
+            if os.path.isfile(candidate):
+                return candidate
+
+        matches = []
+        for root, _, files in os.walk(state_path):
+            for name in files:
+                lower_name = name.lower()
+                if lower_name.endswith(".safetensors") and "model" in lower_name:
+                    matches.append(os.path.join(root, name))
+                elif lower_name.endswith((".bin", ".pt")) and "model" in lower_name:
+                    matches.append(os.path.join(root, name))
+
+        if not matches:
+            return None
+        matches.sort(key=lambda path: (0 if path.endswith(".safetensors") else 1, len(path), path))
+        return matches[0]
+
+    def _link_state_model_weight(self, checkpoint_path, state_path):
+        """Create an outer checkpoint link to the model weights inside a full state."""
+        if not self.accelerator.is_main_process:
+            return
+
+        target = self._find_state_model_weight(state_path)
+        if target is None:
+            logger.warning(f"No model weight file found inside training state: {state_path}")
+            return
+
+        link_path = (
+            checkpoint_path + "_model.safetensors"
+            if target.endswith(".safetensors")
+            else checkpoint_path + "_pytorch_model.pt"
+        )
+        if os.path.lexists(link_path):
+            if os.path.islink(link_path):
+                os.unlink(link_path)
+            else:
+                logger.warning(f"Checkpoint path already exists and is not a symlink, skip linking: {link_path}")
+                return
+
+        relative_target = os.path.relpath(target, os.path.dirname(link_path))
+        os.symlink(relative_target, link_path)
+        logger.info(f"Linked model checkpoint {link_path} -> {relative_target}")
+
     def _save_checkpoint(self):
         """Save current training state."""
         save_format = getattr(self.config.trainer, "save_format", "pt")
         save_ckpt_only = getattr(self.config.trainer, "save_ckpt_only", True)
         checkpoint_path = os.path.join(self.checkpoint_dir, f"steps_{self.completed_steps}")
 
-        if self.accelerator.is_main_process:
+        if not save_ckpt_only:
+            state_path = checkpoint_path + "_training_state"
+            self.accelerator.save_state(output_dir=state_path)
+            self.accelerator.wait_for_everyone()
+            self._link_state_model_weight(checkpoint_path, state_path)
+            self.accelerator.print(f"✅ Training state saved at {state_path}")
+        elif self.accelerator.is_main_process:
             state_dict = self.accelerator.get_state_dict(self.model)
             if save_format == "safetensors":
                 from safetensors.torch import save_file
@@ -279,23 +341,17 @@ class VLATrainer(TrainerUtils):
             else:
                 raise ValueError(f"Unsupported save_format `{save_format}`. Expected `pt` or `safetensors`.")
 
+            self.accelerator.print(f"✅ Model checkpoint saved at {checkpoint_path}")
+
+        if self.accelerator.is_main_process:
             summary_data = {"steps": self.completed_steps}
             with open(os.path.join(self.config.output_dir, "summary.jsonl"), "a") as f:
                 f.write(json.dumps(summary_data) + "\n")
-            self.accelerator.print(f"✅ Checkpoint saved at {checkpoint_path}")
-
             if isinstance(self.config, AccessTrackedConfig):
                 logger.info("📊 Saving accessed configuration...")
                 output_dir = Path(self.config.output_dir)
                 self.config.save_accessed_config(output_dir / "config.yaml", use_original_values=False)
                 logger.info("✅ Configuration files saved")
-
-        self.accelerator.wait_for_everyone()
-
-        if not save_ckpt_only:
-            state_path = checkpoint_path + "_training_state"
-            self.accelerator.save_state(output_dir=state_path)
-            self.accelerator.print(f"✅ Training state saved at {state_path}")
 
         self.accelerator.wait_for_everyone()
 
