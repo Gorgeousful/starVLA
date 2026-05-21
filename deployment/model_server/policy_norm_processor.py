@@ -6,9 +6,10 @@ This class replaces the hand-rolled un-normalization math that previously
 lived in every eval client. It rebuilds the *exact* ``ComposedModalityTransform``
 used at training time from a checkpoint:
 
-  1. Read ``config.yaml`` next to the ckpt → resolve ``data_mix`` →
-     look up ``robot_type`` from ``DATASET_NAMED_MIXTURES`` →
-     fetch the ``DataConfig`` from ``ROBOT_TYPE_CONFIG_MAP``.
+  1. Read ``config.yaml`` next to the ckpt, then prefer the frozen
+     ``data_registry/data_config.py`` saved in that run dir to resolve
+     ``data_mix`` → ``robot_type`` → ``DataConfig``. Older checkpoints without
+     this snapshot fall back to the runtime examples registry.
   2. Build the transform pipeline via ``data_config.transform()``.
   3. Reconstruct a ``DatasetMetadata`` from the saved
      ``dataset_statistics.json`` (which stores **combined** per-modality
@@ -23,16 +24,16 @@ training — there is no second source of truth for normalization math.
 
 from __future__ import annotations
 
+import hashlib
+import importlib.util
 import logging
-from typing import Any, Dict, List, Optional, Sequence
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
 
-from starVLA.dataloader.gr00t_lerobot.registry import (
-    DATASET_NAMED_MIXTURES,
-    ROBOT_TYPE_CONFIG_MAP,
-)
 from starVLA.dataloader.gr00t_lerobot.schema import (
     DatasetMetadata,
     StateActionMetadata,
@@ -43,8 +44,59 @@ from starVLA.model.framework.share_tools import read_mode_config
 logger = logging.getLogger(__name__)
 
 
+def _checkpoint_run_dir(pretrained_checkpoint: str | Path) -> Path:
+    checkpoint_path = Path(pretrained_checkpoint)
+    if checkpoint_path.is_file():
+        return checkpoint_path.parents[1]
+    return checkpoint_path
+
+
+def _load_module_from_file(module_prefix: str, file_path: Path):
+    digest = hashlib.sha1(str(file_path.resolve()).encode("utf-8")).hexdigest()[:12]
+    module_name = f"{module_prefix}_{digest}"
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to import checkpoint data registry from {file_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_checkpoint_registry(
+    pretrained_checkpoint: str | Path,
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], Optional[str]]:
+    cfg_file = _checkpoint_run_dir(pretrained_checkpoint) / "data_registry" / "data_config.py"
+    if not cfg_file.is_file():
+        return None, None, None
+
+    module = _load_module_from_file("_starvla_checkpoint_data_config", cfg_file)
+    robot_type_config_map = getattr(module, "ROBOT_TYPE_CONFIG_MAP", None)
+    dataset_named_mixtures = getattr(module, "DATASET_NAMED_MIXTURES", None)
+    if robot_type_config_map is None or dataset_named_mixtures is None:
+        raise AttributeError(
+            f"Checkpoint data registry {cfg_file} must define "
+            "`ROBOT_TYPE_CONFIG_MAP` and `DATASET_NAMED_MIXTURES`."
+        )
+    return dict(robot_type_config_map), dict(dataset_named_mixtures), str(cfg_file)
+
+
+def _load_runtime_registry() -> Tuple[Dict[str, Any], Dict[str, Any], str]:
+    from starVLA.dataloader.gr00t_lerobot.registry import (
+        DATASET_NAMED_MIXTURES,
+        ROBOT_TYPE_CONFIG_MAP,
+    )
+
+    return (
+        dict(ROBOT_TYPE_CONFIG_MAP),
+        dict(DATASET_NAMED_MIXTURES),
+        "runtime examples/<BENCH>/train_files/data_registry",
+    )
+
+
 def _resolve_robot_type(
     model_cfg: dict,
+    dataset_named_mixtures: Dict[str, Any],
     unnorm_key: Optional[str] = None,
 ) -> str:
     """Look up the training robot_type from the saved cfg.
@@ -68,14 +120,14 @@ def _resolve_robot_type(
             "cannot resolve training-time robot_type."
         ) from e
 
-    if data_mix not in DATASET_NAMED_MIXTURES:
+    if data_mix not in dataset_named_mixtures:
         raise KeyError(
             f"data_mix={data_mix!r} not in DATASET_NAMED_MIXTURES "
-            f"(available: {sorted(DATASET_NAMED_MIXTURES.keys())[:20]} ...). "
-            "Did you forget to register the example under examples/<bench>/train_files/data_registry/?"
+            f"(available: {sorted(dataset_named_mixtures.keys())[:20]} ...). "
+            "Did you forget to save or select the training data registry?"
         )
 
-    mixture = DATASET_NAMED_MIXTURES[data_mix]
+    mixture = dataset_named_mixtures[data_mix]
     robot_types = sorted({entry[2] for entry in mixture})
 
     if len(robot_types) == 1:
@@ -270,15 +322,28 @@ class PolicyNormProcessor:
             )
         self._unnorm_key = unnorm_key  # may still be None for multi-key case
 
-        # 1) Resolve which DataConfig was used at training.
-        robot_type = _resolve_robot_type(cfg, unnorm_key=unnorm_key)
-        if robot_type not in ROBOT_TYPE_CONFIG_MAP:
+        # 1) Resolve which DataConfig was used at training. Prefer the frozen
+        # registry snapshot saved in the checkpoint run dir; fall back to the
+        # runtime examples registry only for older checkpoints.
+        robot_type_config_map, dataset_named_mixtures, registry_source = _load_checkpoint_registry(
+            self._ckpt_path
+        )
+        if robot_type_config_map is None or dataset_named_mixtures is None:
+            robot_type_config_map, dataset_named_mixtures, registry_source = _load_runtime_registry()
+
+        robot_type = _resolve_robot_type(
+            cfg,
+            dataset_named_mixtures=dataset_named_mixtures,
+            unnorm_key=unnorm_key,
+        )
+        if robot_type not in robot_type_config_map:
             raise KeyError(
                 f"robot_type={robot_type!r} not in ROBOT_TYPE_CONFIG_MAP "
-                f"(available: {sorted(ROBOT_TYPE_CONFIG_MAP.keys())}). "
-                "Make sure the example's data_registry/data_config.py is importable."
+                f"(available: {sorted(robot_type_config_map.keys())}). "
+                f"Registry source: {registry_source}."
             )
-        self._data_config = ROBOT_TYPE_CONFIG_MAP[robot_type]
+        self._registry_source = registry_source
+        self._data_config = robot_type_config_map[robot_type]
         self._action_keys: List[str] = list(self._data_config.action_keys)
         self._state_keys: List[str] = list(getattr(self._data_config, "state_keys", []))
 
@@ -319,9 +384,10 @@ class PolicyNormProcessor:
 
         logger.info(
             "PolicyNormProcessor ready: robot_type=%s, unnorm_key=%s, "
-            "action_keys=%s (dims=%s), state_keys=%s",
+            "registry_source=%s, action_keys=%s (dims=%s), state_keys=%s",
             robot_type,
             unnorm_key,
+            self._registry_source,
             self._action_keys,
             [self._action_key_dims[k] for k in self._action_keys],
             self._state_keys,
@@ -337,6 +403,26 @@ class PolicyNormProcessor:
     @property
     def state_keys(self) -> List[str]:
         return list(self._state_keys)
+
+    @property
+    def registry_source(self) -> str:
+        return self._registry_source
+
+    @property
+    def video_keys(self) -> List[str]:
+        return list(getattr(self._data_config, "video_keys", []))
+
+    @property
+    def observation_indices(self) -> List[int]:
+        return list(getattr(self._data_config, "observation_indices", [0]))
+
+    @property
+    def state_indices(self) -> List[int]:
+        return list(getattr(self._data_config, "state_indices", self.observation_indices))
+
+    @property
+    def action_indices(self) -> List[int]:
+        return list(getattr(self._data_config, "action_indices", []))
 
     @property
     def unnorm_key(self) -> str:

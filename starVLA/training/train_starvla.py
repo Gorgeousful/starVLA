@@ -35,6 +35,7 @@ from transformers import AutoProcessor, get_scheduler
 from starVLA.dataloader import build_dataloader
 from starVLA.model.framework.base_framework import build_framework
 from starVLA.model.framework.share_tools import apply_config_compat
+from starVLA.training.trainer_utils.data_registry_snapshot import snapshot_data_registry
 from starVLA.training.trainer_utils.config_tracker import AccessTrackedConfig, wrap_config
 from starVLA.training.trainer_utils.lora_tools import apply_lora_if_enabled
 from starVLA.training.trainer_utils.trainer_tools import TrainerUtils, build_param_lr_groups, setup_optimizer_and_scheduler, normalize_dotlist_args
@@ -525,6 +526,11 @@ def main(cfg) -> None:
     logger.info("✅ Configuration wrapped for access tracking")
 
     output_dir = setup_directories(cfg=cfg)
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        snapshot_data_registry(getattr(cfg, "config_yaml", None), output_dir)
+    if dist.is_initialized():
+        dist.barrier()
+
     vla = build_framework(cfg)
     vla = apply_lora_if_enabled(vla, cfg)
     vla_train_dataloader = prepare_data(cfg=cfg, accelerator=accelerator, output_dir=output_dir)

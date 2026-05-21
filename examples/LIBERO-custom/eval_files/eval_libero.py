@@ -19,8 +19,6 @@ from model2libero_interface import ModelClient
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
-TEMPORAL_DELTA_INDICES = [-20, -10, 0]
-TEMPORAL_VIDEO_KEYS = ["video.primary_image", "video.wrist_image"]
 
 
 def _resize_image(image: np.ndarray, size: list[int] | tuple[int, int]) -> np.ndarray:
@@ -213,23 +211,36 @@ def eval_libero(args: Args) -> None:
                 example_dict = {
                     "image": [],
                     "image_layout": {
-                        "order": "time-major",
-                        "delta_indices": TEMPORAL_DELTA_INDICES,
-                        "video_keys": TEMPORAL_VIDEO_KEYS,
+                        "order": client_model.image_layout_order,
+                        "delta_indices": client_model.temporal_observation_indices,
+                        "video_keys": client_model.temporal_video_keys,
                     },
                     "lang": str(task_description),
                 }
                 model_image_size = client_model.obs_image_size
-                for delta_index in TEMPORAL_DELTA_INDICES:
-                    example_dict["image"].extend(
-                        [
-                            _resize_image(_history_lookup(primary_history, delta_index), model_image_size),
-                            _resize_image(_history_lookup(wrist_history, delta_index), model_image_size),
-                        ]
-                    )
+                history_by_video_key = {
+                    "video.primary_image": primary_history,
+                    "video.wrist_image": wrist_history,
+                }
+                for delta_index in client_model.temporal_observation_indices:
+                    for video_key in client_model.temporal_video_keys:
+                        if video_key not in history_by_video_key:
+                            raise ValueError(
+                                f"Unsupported temporal_video_key={video_key!r}; "
+                                f"available keys are {sorted(history_by_video_key)}"
+                            )
+                        example_dict["image"].append(
+                            _resize_image(
+                                _history_lookup(history_by_video_key[video_key], delta_index),
+                                model_image_size,
+                            )
+                        )
                 if client_model.include_state:
                     example_dict["state"] = np.stack(
-                        [_history_lookup(state_history, delta_index) for delta_index in TEMPORAL_DELTA_INDICES],
+                        [
+                            _history_lookup(state_history, delta_index)
+                            for delta_index in client_model.temporal_state_indices
+                        ],
                         axis=0,
                     )
 

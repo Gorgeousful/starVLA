@@ -48,6 +48,16 @@ class ModelClient:
         self.include_state = meta.get("include_state", False) not in ["False", False]
         self.obs_image_size = meta.get("obs_image_size", [224, 224])
         self.image_flip = meta.get("image_flip", None)
+        self.temporal_observation_indices = list(
+            meta.get("temporal_observation_indices", [-20, -10, 0])
+        )
+        self.temporal_state_indices = list(
+            meta.get("temporal_state_indices", self.temporal_observation_indices)
+        )
+        self.temporal_video_keys = list(
+            meta.get("temporal_video_keys", ["video.primary_image", "video.wrist_image"])
+        )
+        self.image_layout_order = meta.get("image_layout_order", "time-major")
 
         self.policy_setup = policy_setup
         self.unnorm_key = unnorm_key
@@ -55,7 +65,10 @@ class ModelClient:
             f"*** policy_setup: {policy_setup}, unnorm_key: {unnorm_key}, "
             f"action_chunk_size: {self.action_chunk_size}, "
             f"include_state: {self.include_state}, obs_image_size: {self.obs_image_size}, "
-            f"image_flip: {self.image_flip}, server_meta: {meta} ***"
+            f"image_flip: {self.image_flip}, temporal_observation_indices: "
+            f"{self.temporal_observation_indices}, temporal_state_indices: "
+            f"{self.temporal_state_indices}, temporal_video_keys: {self.temporal_video_keys}, "
+            f"server_meta: {meta} ***"
         )
 
         self.use_ddim = use_ddim

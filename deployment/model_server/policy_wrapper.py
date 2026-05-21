@@ -125,6 +125,12 @@ class PolicyServerWrapper:
             proc = self._get_processor(self._default_unnorm_key)
             base["action_keys"] = proc.action_keys
             base["state_keys"] = proc.state_keys
+            base["data_registry_source"] = proc.registry_source
+            base["temporal_observation_indices"] = proc.observation_indices
+            base["temporal_state_indices"] = proc.state_indices
+            base["temporal_video_keys"] = proc.video_keys
+            base["temporal_action_indices"] = proc.action_indices
+            base["image_layout_order"] = "time-major"
         return base
 
     def predict_action(

@@ -2,7 +2,7 @@
 STARVLA_DIR=/data0/luokang/research/starvla/starVLA
 cd ${STARVLA_DIR}
 # CKPT=${STARVLA_DIR}/playground/Checkpoints/0405_libero4in1_CosmoPredict2GR00T/checkpoints/steps_50000_pytorch_model.pt
-CKPT=${STARVLA_DIR}/playground/Checkpoints/0513_libero4in1_custom_qwen3pi05/checkpoints/steps_35000_pytorch_model.pt
+CKPT=${STARVLA_DIR}/playground/Checkpoints/0519_libero4in1_qwen3pi05/checkpoints/steps_10000_pytorch_model.pt
 
 ###########################################################################################
 export LIBERO_HOME=/data0/luokang/research/LIBERO
