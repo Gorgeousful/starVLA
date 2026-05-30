@@ -19,17 +19,25 @@ config_yaml=./examples/LIBERO/train_files/starvla_cotrain_libero.yaml
 libero_data_root=playground/Datasets/LEROBOT_LIBERO_DATA
 data_mix=libero_all
 run_root_dir=./playground/Checkpoints
-run_id=0520_libero4in1_qwen3pi05
+run_id=0530_libero4in1_qwen3pi05
 wandb_entity=luokang2192-irmv
 wandb_project=starvla_libero
 per_device_batch_size=4
 gradient_accumulation_steps=8
 is_debug=False
+is_resume=${IS_RESUME:-auto}
 deepspeed_config_yaml=./starVLA/config/deepseeds/deepspeed_zero2.yaml
 # === End of environment variable configuration ===
 ###########################################################################################
 
 output_dir=${run_root_dir}/${run_id}
+if [ "${is_resume}" = "auto" ]; then
+  if ls "${output_dir}"/checkpoints/steps_*_training_state >/dev/null 2>&1; then
+    is_resume=True
+  else
+    is_resume=False
+  fi
+fi
 mkdir -p ${output_dir}
 cp $0 ${output_dir}/ # mv this script to the output dir
 
@@ -50,4 +58,5 @@ accelerate launch \
   --run_id ${run_id} \
   --wandb_project ${wandb_project} \
   --wandb_entity ${wandb_entity} \
-  --is_debug ${is_debug}
+  --is_debug ${is_debug} \
+  --trainer.is_resume ${is_resume}

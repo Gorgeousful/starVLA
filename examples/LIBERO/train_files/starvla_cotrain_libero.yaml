@@ -85,7 +85,7 @@ trainer:
   weight_decay: 0.0
   logging_frequency: 10
   save_ckpt_only: false #!
-  is_resume: true #!
+  is_resume: false #!
   gradient_clipping: 1.0
   gradient_checkpointing: true
   lora:

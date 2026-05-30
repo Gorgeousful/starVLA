@@ -48,6 +48,7 @@ gradient_accumulation_plugin = GradientAccumulationPlugin(
 accelerator = Accelerator(
     deepspeed_plugin=deepspeed_plugin,
     gradient_accumulation_plugin=gradient_accumulation_plugin,
+    step_scheduler_with_optimizer=False,
 )
 accelerator.print(accelerator.state)
 

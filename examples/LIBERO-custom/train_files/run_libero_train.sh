@@ -26,11 +26,19 @@ per_device_batch_size=4
 gradient_accumulation_steps=8
 is_debug=False
 save_ckpt_only=False
+is_resume=${IS_RESUME:-auto}
 deepspeed_config_yaml=./starVLA/config/deepseeds/deepspeed_zero2.yaml
 # === End of environment variable configuration ===
 ###########################################################################################
 
 output_dir=${run_root_dir}/${run_id}
+if [ "${is_resume}" = "auto" ]; then
+  if ls "${output_dir}"/checkpoints/steps_*_training_state >/dev/null 2>&1; then
+    is_resume=True
+  else
+    is_resume=False
+  fi
+fi
 mkdir -p ${output_dir}
 cp $0 ${output_dir}/ # mv this script to the output dir
 
@@ -52,4 +60,5 @@ accelerate launch \
   --wandb_project ${wandb_project} \
   --wandb_entity ${wandb_entity} \
   --is_debug ${is_debug} \
-  --trainer.save_ckpt_only ${save_ckpt_only}
+  --trainer.save_ckpt_only ${save_ckpt_only} \
+  --trainer.is_resume ${is_resume}
