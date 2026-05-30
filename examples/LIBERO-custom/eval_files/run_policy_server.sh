@@ -9,7 +9,7 @@ LIBERO_PYTHON=/data0/luokang/miniconda3/envs/libero/bin/python
 
 # === Checkpoint ===
 # CKPT=${STARVLA_DIR}/playground/Pretrained_models/StarVLA/Qwen3-VL-OFT-LIBERO-4in1/checkpoints/steps_50000_pytorch_model.pt
-CKPT=${STARVLA_DIR}/playground/Checkpoints/0519_libero4in1_custom_qwen3ki/checkpoints/steps_10000_pytorch_model.pt
+CKPT=${STARVLA_DIR}/playground/Checkpoints/0519_libero4in1_custom_qwen3ki/checkpoints/steps_50000_pytorch_model.pt
 
 export star_vla_python=${STARVLA_PYTHON}
 your_ckpt=${CKPT}   

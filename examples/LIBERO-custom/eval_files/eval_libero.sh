@@ -2,7 +2,7 @@
 STARVLA_DIR=/data0/luokang/research/starvla/starVLA
 cd ${STARVLA_DIR}
 # CKPT=${STARVLA_DIR}/playground/Checkpoints/0405_libero4in1_CosmoPredict2GR00T/checkpoints/steps_50000_pytorch_model.pt
-CKPT=${STARVLA_DIR}/playground/Checkpoints/0519_libero4in1_custom_qwen3ki/checkpoints/steps_10000_pytorch_model.pt
+CKPT=${STARVLA_DIR}/playground/Checkpoints/0519_libero4in1_custom_qwen3ki/checkpoints/steps_50000_pytorch_model.pt
 ###########################################################################################
 export LIBERO_HOME=/data0/luokang/research/LIBERO
 export LIBERO_CONFIG_PATH=${LIBERO_HOME}/libero
@@ -53,4 +53,5 @@ ${LIBERO_Python} ./examples/LIBERO-custom/eval_files/eval_libero.py \
     --args.num-trials-per-task "$num_trials_per_task" \
     --args.vlm-aux-max-new-tokens "$vlm_aux_max_new_tokens" \
     --args.video-out-path "$video_out_path" \
+    --args.unnorm-key "$unnorm_key" \
     2>&1 | tee "$log_file"

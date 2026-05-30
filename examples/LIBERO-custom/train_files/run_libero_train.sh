@@ -32,6 +32,8 @@ deepspeed_config_yaml=./starVLA/config/deepseeds/deepspeed_zero2.yaml
 ###########################################################################################
 
 output_dir=${run_root_dir}/${run_id}
+mkdir -p ${output_dir}
+cp $0 ${output_dir}/ # mv this script to the output dir
 if [ "${is_resume}" = "auto" ]; then
   if ls "${output_dir}"/checkpoints/steps_*_training_state >/dev/null 2>&1; then
     is_resume=True
@@ -39,8 +41,6 @@ if [ "${is_resume}" = "auto" ]; then
     is_resume=False
   fi
 fi
-mkdir -p ${output_dir}
-cp $0 ${output_dir}/ # mv this script to the output dir
 
 
 # export WANDB_MODE=disabled

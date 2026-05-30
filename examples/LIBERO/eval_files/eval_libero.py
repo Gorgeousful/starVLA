@@ -159,12 +159,9 @@ def eval_libero(args: Args) -> None:
             # Setup
             t = 0
             replay_images = []
-            full_actions = []
 
             logging.info(f"Starting episode {task_episodes + 1}...")
             step = 0
-
-            # full_actions = np.load("./debug/action.npy")
 
             while t < max_steps + args.num_steps_wait:
                 # try:
@@ -239,8 +236,6 @@ def eval_libero(args: Args) -> None:
                 else:
                     delta_action = np.concatenate([world_vector_delta, rotation_delta, gripper], axis=0)
 
-                full_actions.append(delta_action)
-
                 # __import__("ipdb").set_trace()
                 # see ../robosuite/controllers/controller_factory.py
                 obs, reward, done, info = env.step(delta_action.tolist())
@@ -263,18 +258,6 @@ def eval_libero(args: Args) -> None:
                 fps=10,
             )
 
-            full_actions = np.stack(full_actions)
-            actions_out_path = pathlib.Path(args.video_out_path) / (
-                f"rollout_{task_segment}_episode{episode_idx}_{suffix}.npy"
-            )
-            np.save(actions_out_path, full_actions)
-            logging.info(
-                "Action stats: min=%s max=%s mean=%s saved=%s",
-                np.array2string(full_actions.min(axis=0), precision=4, suppress_small=True),
-                np.array2string(full_actions.max(axis=0), precision=4, suppress_small=True),
-                np.array2string(full_actions.mean(axis=0), precision=4, suppress_small=True),
-                actions_out_path,
-            )
 
             # print(pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.mp4")
             # Log current results

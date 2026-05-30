@@ -39,4 +39,6 @@ ${LIBERO_Python} ./examples/LIBERO/eval_files/eval_libero.py \
     --args.port $base_port \
     --args.task-suite-name "$task_suite_name" \
     --args.num-trials-per-task "$num_trials_per_task" \
-    --args.video-out-path "$video_out_path" 2>&1 | tee "$log_file"
+    --args.video-out-path "$video_out_path" \
+    --args.unnorm-key "$unnorm_key" \
+    2>&1 | tee "$log_file" 
