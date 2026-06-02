@@ -243,7 +243,9 @@ class baseframework(PreTrainedModel):
 
             FrameworkModel = apply_lora_if_enabled(FrameworkModel, model_config)
         # set for action un-norm
+
         FrameworkModel.norm_stats = norm_stats
+
         # Load from Checkpoint (Custom --> should load both *projector* and *llm* weights)
         if pretrained_checkpoint.suffix == ".safetensors":
             from safetensors.torch import load_file
@@ -251,13 +253,22 @@ class baseframework(PreTrainedModel):
             model_state_dict = load_file(str(pretrained_checkpoint))
         else:
             model_state_dict = torch.load(pretrained_checkpoint, map_location="cpu")
-        # logger.info(f"Loading model weights from `{pretrained_checkpoint}`")
+
+        if isinstance(model_state_dict, dict) and "module" in model_state_dict:
+            logger.info("Detected DeepSpeed/Accelerate checkpoint wrapper; loading weights from `module`.")
+            model_state_dict = model_state_dict["module"]
+
+        if isinstance(model_state_dict, dict):
+            model_state_dict = {
+                k.removeprefix("module."): v
+                for k, v in model_state_dict.items()
+            }
+
         model_keys = set(FrameworkModel.state_dict().keys())
         checkpoint_keys = set(model_state_dict.keys())
         try:
             FrameworkModel.load_state_dict(model_state_dict, strict=True)
         except RuntimeError as e:
-            # must keep all keys matched
             common_keys = model_keys.intersection(checkpoint_keys)
             missing_keys = model_keys - common_keys
             unexpected_keys = checkpoint_keys - common_keys
